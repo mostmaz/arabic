@@ -164,6 +164,16 @@ def api_delete_listing(listing_id: str):
     return jsonify({"status": "deleted"})
 
 
+@app.route("/api/listings/clear-phones", methods=["POST"])
+def api_clear_phones():
+    """Wipe all stored phone numbers so they get re-scraped correctly."""
+    all_items = load_listings()
+    for l in all_items:
+        l["phone"] = ""
+    LISTINGS_FILE.write_text(json.dumps(all_items, ensure_ascii=False, indent=2), encoding="utf-8")
+    return jsonify({"status": "ok", "count": len(all_items)})
+
+
 # ── Login ────────────────────────────────────────────────────────────────────
 
 @app.route("/api/login", methods=["POST"])

@@ -484,62 +484,84 @@ async def do_login(phone: str, password: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def reveal_phone(page: Page) -> str:
-    """Click the 'show phone' button and return the revealed number."""
-    phone_btn_sel = (
-        "button[class*='phone'], button[class*='Phone'], "
-        "a[class*='phone'], a[class*='Phone'], "
-        "[class*='showPhone'], [class*='show-phone'], "
-        "button:has-text('اظهار'), button:has-text('الرقم'), "
-        "button:has-text('Show'), button:has-text('Call'), "
-        "[data-action*='phone'], [data-type*='phone']"
-    )
-    def _extract_from_soup(soup: BeautifulSoup) -> str:
-        # Try tel: href first — most reliable
-        for sel in ["a[href^='tel:']", "[class*='phone'] a[href^='tel:']"]:
-            el = soup.select_one(sel)
-            if el:
-                cleaned = re.sub(r"[^\d+]", "", el.get("href", "").replace("tel:", ""))
-                if len(cleaned) >= 8:
-                    return cleaned
-        # Try phone-labelled elements only (not whole page)
-        for sel in [
-            "[class*='phone']", "[class*='Phone']",
-            "[data-type*='phone']", "[class*='call']",
-        ]:
-            el = soup.select_one(sel)
-            if el:
-                text = el.get_text(strip=True)
-                m = re.search(r"07\d{8,9}", text)
-                if m:
-                    return m.group()
-                m = re.search(r"\+964\s?\d{9,10}", text)
-                if m:
-                    return re.sub(r"\s", "", m.group())
-        return ""
+    """Click the show-phone button and return the revealed number.
+
+    Strategy:
+    1. Collect any tel: hrefs already on the page before clicking.
+    2. Click the show-phone button.
+    3. Wait for a NEW tel: href to appear (the revealed number).
+    4. Return that number.
+    5. If no tel: link appears, return empty string — never guess from page text.
+    """
+
+    def _tel_hrefs(html: str) -> list[str]:
+        """Return all unique tel: href values found in the page."""
+        soup = BeautifulSoup(html, "lxml")
+        results = []
+        for a in soup.select("a[href^='tel:']"):
+            num = re.sub(r"[^\d+]", "", a["href"].replace("tel:", ""))
+            if len(num) >= 8 and num not in results:
+                results.append(num)
+        return results
+
+    phone_btn_selectors = [
+        "[class*='showPhone']",
+        "[class*='show-phone']",
+        "[class*='ShowPhone']",
+        "button[class*='phone']",
+        "button[class*='Phone']",
+        "a[class*='phone']:not([href^='tel:'])",
+        "[data-action*='phone']",
+        "[data-type*='phone']",
+        "button:has-text('اظهار')",
+        "button:has-text('الرقم')",
+        "button:has-text('اتصل')",
+    ]
 
     try:
-        btn = page.locator(phone_btn_sel).first
-        if await btn.count() > 0:
-            await btn.scroll_into_view_if_needed()
-            await jitter_sleep(0.5, 0.2)
-            await btn.click()
-            await jitter_sleep(2.0, 0.3)   # wait for reveal animation
+        # Snapshot tel: links before we click anything
+        before = _tel_hrefs(await page.content())
 
-            html = await page.content()
-            soup = BeautifulSoup(html, "lxml")
-            result = _extract_from_soup(soup)
-            if result:
-                return result
+        # Find and click the show-phone button
+        clicked = False
+        for sel in phone_btn_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.scroll_into_view_if_needed()
+                    await jitter_sleep(0.4, 0.1)
+                    await loc.click()
+                    clicked = True
+                    break
+            except Exception:
+                continue
+
+        if not clicked:
+            return ""
+
+        # Wait up to 6 s for a new tel: link to appear
+        try:
+            await page.wait_for_selector("a[href^='tel:']", timeout=6000)
+        except Exception:
+            pass
+
+        await jitter_sleep(0.8, 0.2)
+
+        after = _tel_hrefs(await page.content())
+
+        # Prefer newly appeared tel: links
+        new_nums = [n for n in after if n not in before]
+        if new_nums:
+            return new_nums[0]
+
+        # If the button revealed the same link (already present), return it
+        if after:
+            return after[0]
+
     except Exception:
         pass
 
-    # Fallback: scope to phone elements only — do NOT scan full page
-    try:
-        html = await page.content()
-        soup = BeautifulSoup(html, "lxml")
-        return _extract_from_soup(soup)
-    except Exception:
-        return ""
+    return ""
 
 
 # ---------------------------------------------------------------------------
