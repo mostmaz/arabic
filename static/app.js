@@ -6,6 +6,7 @@ let currentPage  = 1;
 let currentQuery = "";
 let pollTimer    = null;
 let searchTimer  = null;
+let listingsMap  = {};   // listing_id / index → listing object
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -105,6 +106,15 @@ async function loadListings(page = 1) {
   }
 
   empty.classList.add("hidden");
+
+  // Store listings in a map so openDetail can look them up without JSON escaping
+  listingsMap = {};
+  data.items.forEach((l, i) => {
+    const key = l.listing_id || String(i);
+    l._key = key;
+    listingsMap[key] = l;
+  });
+
   grid.innerHTML = data.items.map(cardHTML).join("");
 
   // Pagination
@@ -121,7 +131,7 @@ function cardHTML(l) {
     : "";
 
   return `
-  <div class="card" onclick="openDetail(${JSON.stringify(JSON.stringify(l)).slice(1,-1)})">
+  <div class="card" onclick="openDetail('${esc(l._key)}')">
     ${img}
     <div class="card-body">
       <div class="card-title">${esc(l.title || "—")}</div>
@@ -169,21 +179,26 @@ function onSearch() {
 
 // ── Detail modal ──────────────────────────────────────────────────────────────
 
-function openDetail(jsonStr) {
-  let l;
-  try { l = JSON.parse(jsonStr); } catch(e) { return; }
+function openDetail(key) {
+  const l = listingsMap[key];
+  if (!l) return;
 
   const images = Array.isArray(l.images) ? l.images : [];
   const locals = Array.isArray(l.local_images) ? l.local_images : [];
 
   // Build image strip: prefer local paths served via /img/
-  const imgSrcs = locals.length
-    ? locals.map(p => {
-        let rel = p.replace(/\\/g, "/");
-        if (rel.startsWith("images/")) rel = rel.slice(7);
-        return `/img/${rel}`;
-      })
-    : images.slice(0, 8);
+  let imgSrcs;
+  if (locals.length) {
+    imgSrcs = locals.map(p => {
+      let rel = p.replace(/\\/g, "/");
+      if (rel.startsWith("images/")) rel = rel.slice(7);
+      return `/img/${rel}`;
+    });
+  } else if (l.thumbnail) {
+    imgSrcs = [l.thumbnail];
+  } else {
+    imgSrcs = images.slice(0, 8);
+  }
 
   const imgHtml = imgSrcs.length
     ? imgSrcs.map(s => `<img src="${esc(s)}" onerror="this.style.display='none'">`).join("")
