@@ -23,7 +23,7 @@ from flask import Flask, render_template, jsonify, request, send_from_directory
 
 from scraper import (
     do_login, is_logged_in, load_cookies, save_cookies, import_browser_cookies,
-    load_listings, read_state, write_state, scrape_page,
+    load_listings, read_state, write_state, scrape_page, purge_svg_images,
     COOKIES_FILE, LISTINGS_FILE, STATE_FILE,
 )
 
@@ -40,6 +40,9 @@ class _SilentFilter(logging.Filter):
 logging.getLogger("werkzeug").addFilter(_SilentFilter())
 
 IMAGES_DIR = Path("images")
+
+# Clean up any 000.svg files left from previous scrapes
+purge_svg_images()
 
 # ── Scraper thread state ─────────────────────────────────────────────────────
 _thread: threading.Thread | None = None

@@ -163,6 +163,32 @@ def save_listing(listing: Listing) -> None:
     LISTINGS_FILE.write_text(json.dumps(all_listings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def purge_svg_images() -> None:
+    """Delete any 000.svg files that were previously downloaded and remove them from listings.json."""
+    images_root = Path("images")
+    deleted = []
+    if images_root.exists():
+        for svg in images_root.rglob("000.svg"):
+            svg.unlink(missing_ok=True)
+            deleted.append(str(svg))
+
+    if not deleted:
+        return
+
+    # Scrub references from listings.json
+    all_listings = load_listings()
+    changed = False
+    for l in all_listings:
+        before = l.get("local_images", [])
+        after = [p for p in before if not p.endswith("000.svg")]
+        if len(after) != len(before):
+            l["local_images"] = after
+            changed = True
+    if changed:
+        LISTINGS_FILE.write_text(json.dumps(all_listings, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[cleanup] removed {len(deleted)} 000.svg file(s)")
+
+
 # ---------------------------------------------------------------------------
 # Cookies persistence
 # ---------------------------------------------------------------------------
@@ -467,37 +493,53 @@ async def reveal_phone(page: Page) -> str:
         "button:has-text('Show'), button:has-text('Call'), "
         "[data-action*='phone'], [data-type*='phone']"
     )
+    def _extract_from_soup(soup: BeautifulSoup) -> str:
+        # Try tel: href first — most reliable
+        for sel in ["a[href^='tel:']", "[class*='phone'] a[href^='tel:']"]:
+            el = soup.select_one(sel)
+            if el:
+                cleaned = re.sub(r"[^\d+]", "", el.get("href", "").replace("tel:", ""))
+                if len(cleaned) >= 8:
+                    return cleaned
+        # Try phone-labelled elements only (not whole page)
+        for sel in [
+            "[class*='phone']", "[class*='Phone']",
+            "[data-type*='phone']", "[class*='call']",
+        ]:
+            el = soup.select_one(sel)
+            if el:
+                text = el.get_text(strip=True)
+                m = re.search(r"07\d{8,9}", text)
+                if m:
+                    return m.group()
+                m = re.search(r"\+964\s?\d{9,10}", text)
+                if m:
+                    return re.sub(r"\s", "", m.group())
+        return ""
+
     try:
         btn = page.locator(phone_btn_sel).first
         if await btn.count() > 0:
             await btn.scroll_into_view_if_needed()
             await jitter_sleep(0.5, 0.2)
             await btn.click()
-            await jitter_sleep(1.5, 0.3)
+            await jitter_sleep(2.0, 0.3)   # wait for reveal animation
 
-            # Phone number should now be visible
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
-            for sel in [
-                "[class*='phone'] a[href^='tel:']",
-                "a[href^='tel:']",
-                "[class*='phone']",
-                "[class*='Phone']",
-                "[data-type*='phone']",
-            ]:
-                el = soup.select_one(sel)
-                if el:
-                    number = el.get("href", "").replace("tel:", "") or el.get_text(strip=True)
-                    cleaned = re.sub(r"[^\d+]", "", number)
-                    if len(cleaned) >= 8:
-                        return cleaned
+            result = _extract_from_soup(soup)
+            if result:
+                return result
     except Exception:
         pass
 
-    # Fallback: extract any phone-like number from page
-    html = await page.content()
-    matches = re.findall(r"(?:07\d{8,9}|\+964\s?\d+)", html)
-    return matches[0] if matches else ""
+    # Fallback: scope to phone elements only — do NOT scan full page
+    try:
+        html = await page.content()
+        soup = BeautifulSoup(html, "lxml")
+        return _extract_from_soup(soup)
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
