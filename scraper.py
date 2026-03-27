@@ -182,8 +182,59 @@ def load_cookies() -> list:
 
 def is_logged_in() -> bool:
     cookies = load_cookies()
-    return any(c.get("name", "").lower() in ("osauth", "sso_token", "user_token", "token", "auth")
-               for c in cookies)
+    # Check for any cookie from opensooq domain — if we have session cookies we're logged in
+    os_cookies = [c for c in cookies if "opensooq" in c.get("domain", "")]
+    return len(os_cookies) > 0
+
+
+def import_browser_cookies(raw: list) -> list:
+    """
+    Normalize cookies exported from browser extensions (Cookie-Editor, EditThisCookie, etc.)
+    into Playwright-compatible format and save them.
+
+    Browser extensions export slightly different field names:
+      expirationDate → expires
+      sameSite "unspecified"/"no_restriction" → "Lax"/"None"
+      storeId, hostOnly, session fields are stripped
+    """
+    sameSite_map = {
+        "unspecified": "Lax",
+        "no_restriction": "None",
+        "lax": "Lax",
+        "strict": "Strict",
+        "none": "None",
+    }
+
+    normalized = []
+    for c in raw:
+        name  = c.get("name", "")
+        value = c.get("value", "")
+        if not name:
+            continue
+
+        domain = c.get("domain", "")
+        # Ensure domain starts with dot for cross-subdomain cookies
+        if domain and not domain.startswith(".") and not domain.startswith("http"):
+            domain = "." + domain
+
+        expires = c.get("expires") or c.get("expirationDate") or -1
+
+        raw_ss = str(c.get("sameSite", "Lax")).lower()
+        same_site = sameSite_map.get(raw_ss, "Lax")
+
+        normalized.append({
+            "name":     name,
+            "value":    value,
+            "domain":   domain,
+            "path":     c.get("path", "/"),
+            "expires":  float(expires),
+            "httpOnly": bool(c.get("httpOnly", False)),
+            "secure":   bool(c.get("secure", False)),
+            "sameSite": same_site,
+        })
+
+    save_cookies(normalized)
+    return normalized
 
 
 # ---------------------------------------------------------------------------

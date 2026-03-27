@@ -21,7 +21,7 @@ from pathlib import Path
 from flask import Flask, render_template, jsonify, request, send_from_directory
 
 from scraper import (
-    do_login, is_logged_in, load_cookies, save_cookies,
+    do_login, is_logged_in, load_cookies, save_cookies, import_browser_cookies,
     load_listings, read_state, write_state, scrape_page,
     COOKIES_FILE, LISTINGS_FILE, STATE_FILE,
 )
@@ -172,6 +172,20 @@ def api_login():
     else:
         write_state(status="idle", message=f"Login failed: {result['error']}")
         return jsonify({"error": result["error"]}), 401
+
+
+@app.route("/api/cookies", methods=["POST"])
+def api_import_cookies():
+    """Accept cookies exported from a browser extension and save them."""
+    body = request.get_json(silent=True)
+    if not body or not isinstance(body, list):
+        return jsonify({"error": "Expected a JSON array of cookies"}), 400
+    try:
+        normalized = import_browser_cookies(body)
+        os_cookies = [c for c in normalized if "opensooq" in c.get("domain", "")]
+        return jsonify({"status": "ok", "imported": len(normalized), "opensooq": len(os_cookies)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/login", methods=["DELETE"])

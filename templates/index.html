@@ -76,24 +76,53 @@
 <div id="loginOverlay" class="overlay hidden" onclick="closeLoginModal()"></div>
 <div id="loginModal" class="modal hidden">
   <div class="modal-header">
-    <h2>OpenSooq Login</h2>
+    <h2>OpenSooq Session</h2>
     <button class="modal-close" onclick="closeLoginModal()">✕</button>
   </div>
-  <p class="modal-note">Log in to reveal full phone numbers on listings.</p>
+
+  <!-- Tabs -->
+  <div class="modal-tabs">
+    <button class="tab-btn active" id="tabCookies" onclick="switchTab('cookies')">🍪 Import Cookies</button>
+    <button class="tab-btn" id="tabLogin" onclick="switchTab('login')">🔐 Login</button>
+  </div>
+
   <div id="loginError" class="alert-error hidden"></div>
-  <label class="field-label">Mobile Number</label>
-  <div class="phone-field-wrap">
-    <span class="phone-prefix">🇮🇶 +964</span>
-    <input id="loginPhone" class="field-input phone-input" type="tel"
-           placeholder="7XXXXXXXXX" autocomplete="tel"/>
+
+  <!-- Cookie import tab -->
+  <div id="panelCookies">
+    <p class="modal-note">
+      <strong>Easiest way:</strong> install
+      <a href="https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank" rel="noopener">Cookie-Editor</a>
+      extension, log in to OpenSooq in your browser, then click
+      <strong>Export → Export as JSON</strong> and paste below.
+    </p>
+    <label class="field-label">Paste cookie JSON here</label>
+    <textarea id="cookieJson" class="field-input cookie-textarea"
+              placeholder='[{"name":"...","value":"...","domain":".opensooq.com",...}]'></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="submitCookies()">Import Cookies</button>
+      <button class="btn btn-ghost" onclick="closeLoginModal()">Cancel</button>
+      <button id="logoutBtn" class="btn btn-danger hidden" onclick="doLogout()">Log Out</button>
+    </div>
   </div>
-  <label class="field-label">Password</label>
-  <input id="loginPassword" class="field-input" type="password" placeholder="••••••••"/>
-  <div class="modal-actions">
-    <button class="btn btn-primary" onclick="submitLogin()">Log In</button>
-    <button class="btn btn-ghost" onclick="closeLoginModal()">Cancel</button>
-    <button id="logoutBtn" class="btn btn-danger hidden" onclick="doLogout()">Log Out</button>
+
+  <!-- Password login tab -->
+  <div id="panelLogin" class="hidden">
+    <p class="modal-note">Log in with your OpenSooq mobile number and password.</p>
+    <label class="field-label">Mobile Number</label>
+    <div class="phone-field-wrap">
+      <span class="phone-prefix">🇮🇶 +964</span>
+      <input id="loginPhone" class="field-input phone-input" type="tel"
+             placeholder="7XXXXXXXXX" autocomplete="tel"/>
+    </div>
+    <label class="field-label">Password</label>
+    <input id="loginPassword" class="field-input" type="password" placeholder="••••••••"/>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="submitLogin()">Log In</button>
+      <button class="btn btn-ghost" onclick="closeLoginModal()">Cancel</button>
+    </div>
   </div>
+
   <div id="loginSpinner" class="spinner hidden"></div>
 </div>
 

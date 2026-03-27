@@ -232,6 +232,49 @@ function closeDetail() {
 
 // ── Login modal ───────────────────────────────────────────────────────────────
 
+function switchTab(tab) {
+  document.getElementById("panelCookies").classList.toggle("hidden", tab !== "cookies");
+  document.getElementById("panelLogin").classList.toggle("hidden",   tab !== "login");
+  document.getElementById("tabCookies").classList.toggle("active",   tab === "cookies");
+  document.getElementById("tabLogin").classList.toggle("active",     tab === "login");
+  document.getElementById("loginError").classList.add("hidden");
+}
+
+async function submitCookies() {
+  const raw     = document.getElementById("cookieJson").value.trim();
+  const errEl   = document.getElementById("loginError");
+  const spinner = document.getElementById("loginSpinner");
+
+  if (!raw) {
+    errEl.textContent = "Please paste your cookie JSON first.";
+    errEl.classList.remove("hidden");
+    return;
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (_) {
+    errEl.textContent = "Invalid JSON — make sure you copied the full export from Cookie-Editor.";
+    errEl.classList.remove("hidden");
+    return;
+  }
+
+  errEl.classList.add("hidden");
+  spinner.classList.remove("hidden");
+
+  const res = await apiFetch("/api/cookies", "POST", parsed);
+  spinner.classList.add("hidden");
+
+  if (res.error) {
+    errEl.textContent = res.error;
+    errEl.classList.remove("hidden");
+  } else {
+    document.getElementById("cookieJson").value = "";
+    closeLoginModal();
+    pollStatus();
+  }
+}
+
 function openLoginModal() {
   document.getElementById("loginOverlay").classList.remove("hidden");
   document.getElementById("loginModal").classList.remove("hidden");
@@ -241,12 +284,13 @@ function openLoginModal() {
   // Check login state to show/hide logout button
   apiFetch("/api/login/status").then(s => {
     document.getElementById("logoutBtn").classList.toggle("hidden", !s.logged_in);
-    if (s.logged_in) {
-      document.getElementById("loginPhone").disabled    = true;
-      document.getElementById("loginPassword").disabled = true;
-    } else {
-      document.getElementById("loginPhone").disabled    = false;
-      document.getElementById("loginPassword").disabled = false;
+    const loggedIn = s.logged_in;
+    if (document.getElementById("loginPhone")) {
+      document.getElementById("loginPhone").disabled    = loggedIn;
+      document.getElementById("loginPassword").disabled = loggedIn;
+    }
+    if (document.getElementById("cookieJson")) {
+      document.getElementById("cookieJson").disabled = loggedIn;
     }
   });
 }
