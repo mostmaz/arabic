@@ -284,13 +284,11 @@ function openLoginModal() {
   // Check login state to show/hide logout button
   apiFetch("/api/login/status").then(s => {
     document.getElementById("logoutBtn").classList.toggle("hidden", !s.logged_in);
-    const loggedIn = s.logged_in;
+    // Only disable the phone/password fields when already logged in
+    // Never disable the cookie textarea — user may want to re-import
     if (document.getElementById("loginPhone")) {
-      document.getElementById("loginPhone").disabled    = loggedIn;
-      document.getElementById("loginPassword").disabled = loggedIn;
-    }
-    if (document.getElementById("cookieJson")) {
-      document.getElementById("cookieJson").disabled = loggedIn;
+      document.getElementById("loginPhone").disabled    = s.logged_in;
+      document.getElementById("loginPassword").disabled = s.logged_in;
     }
   });
 }
