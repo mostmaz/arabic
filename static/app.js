@@ -346,6 +346,13 @@ async function doLogout() {
   pollStatus();
 }
 
+async function clearPhones() {
+  if (!confirm("This will clear all stored phone numbers so they get re-scraped. Continue?")) return;
+  const res = await apiFetch("/api/listings/clear-phones", "POST");
+  alert(`Cleared phone numbers for ${res.count ?? 0} listings.`);
+  loadListings();
+}
+
 // ── Utils ─────────────────────────────────────────────────────────────────────
 
 async function apiFetch(path, method = "GET", body = null) {
