@@ -199,11 +199,52 @@ async def human_mouse_wander(page: Page) -> None:
 # Browser setup
 # ---------------------------------------------------------------------------
 
+def _find_chrome() -> Optional[str]:
+    """
+    Return the path to an available Chrome/Chromium executable, or None to let
+    Playwright resolve it automatically.  Searches:
+      1. CHROME_PATH environment variable
+      2. Playwright's own browser cache (any installed revision)
+      3. Common system locations
+    """
+    import os, glob
+
+    # 1. Explicit env override
+    env_path = os.environ.get("CHROME_PATH")
+    if env_path and Path(env_path).is_file():
+        return env_path
+
+    # 2. Playwright cache — pick the newest revision available
+    cache_patterns = [
+        str(Path.home() / ".cache/ms-playwright/chromium-*/chrome-linux/chrome"),
+        str(Path.home() / ".cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell"),
+        "/root/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
+        "/root/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell",
+    ]
+    for pat in cache_patterns:
+        matches = sorted(glob.glob(pat))
+        if matches:
+            return matches[-1]  # newest revision
+
+    # 3. System paths
+    for candidate in [
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ]:
+        if Path(candidate).is_file():
+            return candidate
+
+    return None  # let Playwright decide
+
+
 async def new_context(playwright, ua: str, viewport: dict) -> tuple:
     """Create a fresh browser + context with full stealth settings."""
-    browser = await playwright.chromium.launch(
-        headless=True,
-        args=[
+    chrome_path = _find_chrome()
+    launch_kwargs: dict = {
+        "headless": True,
+        "args": [
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
@@ -211,7 +252,10 @@ async def new_context(playwright, ua: str, viewport: dict) -> tuple:
             "--window-size=1366,768",
             "--disable-extensions",
         ],
-    )
+    }
+    if chrome_path:
+        launch_kwargs["executable_path"] = chrome_path
+    browser = await playwright.chromium.launch(**launch_kwargs)
     context = await browser.new_context(
         user_agent=ua,
         viewport=viewport,
