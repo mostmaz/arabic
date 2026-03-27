@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>OpenSooq Scraper</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="header">
+  <div class="header-inner">
+    <div class="logo">
+      <span class="logo-icon">🔍</span>
+      <span class="logo-text">OpenSooq Scraper</span>
+    </div>
+    <div id="loginBadge" class="login-badge guest" onclick="openLoginModal()">
+      <span class="badge-dot"></span>
+      <span class="badge-label">Guest</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Scrape bar ─────────────────────────────────────────────────────────── -->
+<section class="scrape-bar">
+  <div class="scrape-inner">
+    <input id="urlInput" class="url-input" type="url"
+           placeholder="Paste an OpenSooq URL — category page or single listing…"
+           autocomplete="off"/>
+    <label class="toggle-label" title="Skip image downloads">
+      <input type="checkbox" id="noImages"/> No images
+    </label>
+    <button id="scrapeBtn" class="btn btn-primary" onclick="startScrape()">Scrape</button>
+    <button id="stopBtn"   class="btn btn-danger hidden" onclick="stopScrape()">Stop</button>
+  </div>
+</section>
+
+<!-- ── Status bar ─────────────────────────────────────────────────────────── -->
+<section class="status-bar" id="statusBar">
+  <div class="status-inner">
+    <span id="statusDot" class="status-dot idle"></span>
+    <span id="statusText" class="status-text">Idle</span>
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-track">
+        <div id="progressFill" class="progress-fill" style="width:0%"></div>
+      </div>
+      <span id="progressLabel" class="progress-label">0 / 0</span>
+    </div>
+  </div>
+</section>
+
+<!-- ── Search + Stats bar ────────────────────────────────────────────────── -->
+<section class="search-bar">
+  <div class="search-inner">
+    <input id="searchInput" class="search-input" type="search"
+           placeholder="Search listings…" oninput="onSearch()"/>
+    <span id="totalCount" class="total-count">0 listings</span>
+  </div>
+</section>
+
+<!-- ── Listings grid ─────────────────────────────────────────────────────── -->
+<main class="main">
+  <div id="grid" class="grid">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">📭</div>
+      <p>No listings yet. Paste a URL above and click <strong>Scrape</strong>.</p>
+    </div>
+  </div>
+</main>
+
+<!-- ── Pagination ─────────────────────────────────────────────────────────── -->
+<footer class="pagination" id="pagination"></footer>
+
+<!-- ── Login modal ────────────────────────────────────────────────────────── -->
+<div id="loginOverlay" class="overlay hidden" onclick="closeLoginModal()"></div>
+<div id="loginModal" class="modal hidden">
+  <div class="modal-header">
+    <h2>OpenSooq Login</h2>
+    <button class="modal-close" onclick="closeLoginModal()">✕</button>
+  </div>
+  <p class="modal-note">Log in to reveal full phone numbers on listings.</p>
+  <div id="loginError" class="alert-error hidden"></div>
+  <label class="field-label">Email / Username</label>
+  <input id="loginEmail" class="field-input" type="email" placeholder="you@example.com"/>
+  <label class="field-label">Password</label>
+  <input id="loginPassword" class="field-input" type="password" placeholder="••••••••"/>
+  <div class="modal-actions">
+    <button class="btn btn-primary" onclick="submitLogin()">Log In</button>
+    <button class="btn btn-ghost" onclick="closeLoginModal()">Cancel</button>
+    <button id="logoutBtn" class="btn btn-danger hidden" onclick="doLogout()">Log Out</button>
+  </div>
+  <div id="loginSpinner" class="spinner hidden"></div>
+</div>
+
+<!-- ── Listing detail modal ───────────────────────────────────────────────── -->
+<div id="detailOverlay" class="overlay hidden" onclick="closeDetail()"></div>
+<div id="detailModal" class="modal detail-modal hidden">
+  <button class="modal-close" onclick="closeDetail()">✕</button>
+  <div id="detailContent"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

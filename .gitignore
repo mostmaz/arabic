@@ -9,10 +9,11 @@ env/
 .env
 
 # Output files
-listings.csv
 listings.json
 images/
 .scrape_state.json
+cookies.json
+state.json
 
 # Playwright
 /playwright-report/

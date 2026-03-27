@@ -1,39 +1,31 @@
 """
-OpenSooq Mobile & Tablet Listings Scraper
-Scrapes: https://iq.opensooq.com/ar/موبايل-تابلت
-
-Two-phase approach:
-  Phase 1 — collect listing URLs from index pages
-  Phase 2 — visit each listing detail page one at a time, extract full data
+OpenSooq Scraper — manual URL-driven, login-aware
+User pastes a URL; app scrapes that page. Login cookies are saved
+so phone numbers are revealed on detail pages.
 """
 
 import asyncio
-import csv
+import glob
 import json
-import math
 import random
 import re
+import threading
+import time
 import argparse
 from pathlib import Path
-from dataclasses import dataclass, asdict, field, fields as dc_fields
-from typing import Optional
+from dataclasses import dataclass, field, fields as dc_fields
+from typing import Optional, Callable
 from urllib.parse import urlparse
 
 import aiohttp
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page
 from bs4 import BeautifulSoup
-from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-BASE_URL = (
-    "https://iq.opensooq.com/ar/%D9%85%D9%88%D8%A8%D8%A7%D9%8A%D9%84-%D8%AA%D8%A7%D8%A8%D9%84%D8%AA"
-)
-
-# Realistic desktop Chrome user agents
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -41,7 +33,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.0.0",
 ]
 
 VIEWPORTS = [
@@ -49,86 +40,54 @@ VIEWPORTS = [
     {"width": 1440, "height": 900},
     {"width": 1920, "height": 1080},
     {"width": 1280, "height": 800},
-    {"width": 1536, "height": 864},
 ]
 
-# Domains to block (ads, analytics, tracking) — speeds up loads + less fingerprinting
 BLOCKED_DOMAINS = [
     "google-analytics.com", "googletagmanager.com", "facebook.net",
-    "facebook.com/tr", "doubleclick.net", "googlesyndication.com",
-    "scorecardresearch.com", "hotjar.com", "segment.com",
-    "amplitude.com", "mixpanel.com", "intercom.io",
-    "criteo.com", "taboola.com", "outbrain.com",
+    "doubleclick.net", "googlesyndication.com", "scorecardresearch.com",
+    "hotjar.com", "segment.com", "amplitude.com", "criteo.com",
+    "taboola.com", "outbrain.com",
 ]
 
-# Stealth JS injected into every page before any script runs
 STEALTH_JS = """
 () => {
-    // 1. Hide webdriver flag
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-    // 2. Realistic plugins list
     const pluginData = [
         { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',                description: 'Portable Document Format' },
         { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
         { name: 'Native Client',      filename: 'internal-nacl-plugin',               description: '' },
     ];
-    const pluginArray = Object.create(PluginArray.prototype);
+    const arr = Object.create(PluginArray.prototype);
     pluginData.forEach((p, i) => {
-        const plugin = Object.create(Plugin.prototype);
-        Object.defineProperty(plugin, 'name',        { value: p.name });
-        Object.defineProperty(plugin, 'filename',    { value: p.filename });
-        Object.defineProperty(plugin, 'description', { value: p.description });
-        pluginArray[i] = plugin;
+        const pl = Object.create(Plugin.prototype);
+        ['name','filename','description'].forEach(k => Object.defineProperty(pl, k, { value: p[k] }));
+        arr[i] = pl;
     });
-    Object.defineProperty(pluginArray, 'length', { value: pluginData.length });
-    pluginArray.item      = (i) => pluginArray[i];
-    pluginArray.namedItem = (name) => pluginData.find(p => p.name === name) || null;
-    pluginArray.refresh   = () => {};
-    Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
-
-    // 3. Realistic language list
-    Object.defineProperty(navigator, 'languages', { get: () => ['ar-IQ', 'ar', 'en-US', 'en'] });
-
-    // 4. Inject chrome runtime object
-    if (!window.chrome) {
-        window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-    }
-
-    // 5. Permissions — return realistic state
-    const _origQuery = window.navigator.permissions && window.navigator.permissions.query;
-    if (_origQuery) {
-        window.navigator.permissions.query = (params) =>
-            params.name === 'notifications'
-                ? Promise.resolve({ state: Notification.permission })
-                : _origQuery.call(window.navigator.permissions, params);
-    }
-
-    // 6. Hardware / memory — realistic values
+    Object.defineProperty(arr, 'length', { value: 3 });
+    arr.item = i => arr[i]; arr.namedItem = n => pluginData.find(p=>p.name===n)||null; arr.refresh=()=>{};
+    Object.defineProperty(navigator, 'plugins', { get: () => arr });
+    Object.defineProperty(navigator, 'languages', { get: () => ['ar-IQ','ar','en-US','en'] });
+    if (!window.chrome) window.chrome = { runtime:{}, loadTimes:()=>{}, csi:()=>{}, app:{} };
+    const _oq = navigator.permissions && navigator.permissions.query;
+    if (_oq) navigator.permissions.query = p =>
+        p.name==='notifications' ? Promise.resolve({state:Notification.permission}) : _oq.call(navigator.permissions,p);
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
     try { Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 }); } catch(_) {}
-
-    // 7. Subtle canvas noise — breaks canvas fingerprinting
-    const _noise = (Math.random() * 2) | 0;  // 0 or 1
-    const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
-    HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {
-        const ctx = this.getContext('2d');
-        if (ctx) {
-            const img = ctx.getImageData(0, 0, this.width || 1, this.height || 1);
-            for (let i = 0; i < img.data.length; i += 400) img.data[i] ^= _noise;
-            ctx.putImageData(img, 0, 0);
-        }
-        return _toDataURL.apply(this, [type, ...args]);
-    };
-
-    // 8. Hide automation in toString checks
-    const _nativeToString = Function.prototype.toString;
-    Function.prototype.toString = function() {
-        if (this === window.navigator.permissions.query) return 'function query() { [native code] }';
-        return _nativeToString.call(this);
+    const _n = (Math.random()*2)|0, _td = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(t,...a) {
+        const c=this.getContext('2d');
+        if(c){const d=c.getImageData(0,0,this.width||1,this.height||1);for(let i=0;i<d.data.length;i+=400)d.data[i]^=_n;c.putImageData(d,0,0);}
+        return _td.apply(this,[t,...a]);
     };
 }
 """
+
+STATE_FILE    = Path("state.json")
+LISTINGS_FILE = Path("listings.json")
+COOKIES_FILE  = Path("cookies.json")
+
+LOGIN_URL  = "https://iq.opensooq.com/ar/user/login"
+BASE_DOMAIN = "iq.opensooq.com"
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +104,86 @@ class Listing:
     date_posted: str
     condition: str
     seller_name: str
+    phone: str
     url: str
-    images: list = field(default_factory=list)       # all remote image URLs
-    local_images: list = field(default_factory=list)  # downloaded local paths
+    images: list = field(default_factory=list)
+    local_images: list = field(default_factory=list)
+
+
+def _asdict(l: Listing) -> dict:
+    return {f.name: getattr(l, f.name) for f in dc_fields(l)}
+
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+
+def write_state(**kwargs) -> None:
+    try:
+        current = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
+    except Exception:
+        current = {}
+    current.update(kwargs)
+    current["updated_at"] = time.time()
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(STATE_FILE)
+
+
+def read_state() -> dict:
+    try:
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {"status": "idle"}
+
+
+# ---------------------------------------------------------------------------
+# Listings persistence
+# ---------------------------------------------------------------------------
+
+def load_listings() -> list:
+    try:
+        if LISTINGS_FILE.exists():
+            return json.loads(LISTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def save_listing(listing: Listing) -> None:
+    all_listings = load_listings()
+    d = _asdict(listing)
+    ids = [l.get("listing_id") for l in all_listings]
+    if listing.listing_id and listing.listing_id in ids:
+        all_listings = [d if l.get("listing_id") == listing.listing_id else l for l in all_listings]
+    else:
+        all_listings.insert(0, d)
+    LISTINGS_FILE.write_text(json.dumps(all_listings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Cookies persistence
+# ---------------------------------------------------------------------------
+
+def save_cookies(cookies: list) -> None:
+    COOKIES_FILE.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_cookies() -> list:
+    try:
+        if COOKIES_FILE.exists():
+            return json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def is_logged_in() -> bool:
+    cookies = load_cookies()
+    return any(c.get("name", "").lower() in ("osauth", "sso_token", "user_token", "token", "auth")
+               for c in cookies)
 
 
 # ---------------------------------------------------------------------------
@@ -155,42 +191,30 @@ class Listing:
 # ---------------------------------------------------------------------------
 
 async def jitter_sleep(base_s: float, jitter_s: float = 0.5) -> None:
-    """Sleep for base_s ± gaussian jitter."""
-    t = base_s + random.gauss(0, jitter_s)
-    await asyncio.sleep(max(0.1, t))
+    await asyncio.sleep(max(0.1, base_s + random.gauss(0, jitter_s)))
 
 
 async def human_scroll(page: Page) -> None:
-    """Scroll down in natural increments, then back up a little."""
     height = await page.evaluate("document.body.scrollHeight")
-    viewport_h = page.viewport_size["height"] if page.viewport_size else 768
     pos = 0
     while pos < height:
-        step = random.randint(200, 500)
-        pos = min(pos + step, height)
-        await page.evaluate(f"window.scrollTo({{top: {pos}, behavior: 'smooth'}})")
-        await asyncio.sleep(random.uniform(0.08, 0.25))
-    # small scroll back up — human behaviour
-    await asyncio.sleep(random.uniform(0.3, 0.7))
-    await page.evaluate(f"window.scrollTo({{top: {max(0, pos - random.randint(100, 300))}, behavior: 'smooth'}})")
-    await asyncio.sleep(random.uniform(0.2, 0.5))
+        pos = min(pos + random.randint(250, 500), height)
+        await page.evaluate(f"window.scrollTo({{top:{pos},behavior:'smooth'}})")
+        await asyncio.sleep(random.uniform(0.08, 0.22))
+    await asyncio.sleep(random.uniform(0.3, 0.6))
+    await page.evaluate(f"window.scrollTo({{top:{max(0,pos-200)},behavior:'smooth'}})")
+    await asyncio.sleep(random.uniform(0.2, 0.4))
 
 
 async def human_mouse_wander(page: Page) -> None:
-    """Move mouse along a bezier-like path to a random point on the page."""
     vp = page.viewport_size or {"width": 1366, "height": 768}
-    # pick a random target
-    tx = random.randint(50, vp["width"] - 50)
-    ty = random.randint(50, vp["height"] - 50)
-    # intermediate control point
-    cx = random.randint(50, vp["width"] - 50)
-    cy = random.randint(50, vp["height"] - 50)
-    steps = random.randint(12, 25)
+    tx, ty = random.randint(50, vp["width"]-50), random.randint(50, vp["height"]-50)
+    cx, cy = random.randint(50, vp["width"]-50), random.randint(50, vp["height"]-50)
+    steps = random.randint(10, 20)
     for i in range(steps + 1):
         t = i / steps
-        # quadratic bezier
-        x = int((1 - t) ** 2 * (vp["width"] // 2) + 2 * (1 - t) * t * cx + t ** 2 * tx)
-        y = int((1 - t) ** 2 * (vp["height"] // 2) + 2 * (1 - t) * t * cy + t ** 2 * ty)
+        x = int((1-t)**2*(vp["width"]//2) + 2*(1-t)*t*cx + t**2*tx)
+        y = int((1-t)**2*(vp["height"]//2) + 2*(1-t)*t*cy + t**2*ty)
         await page.mouse.move(x, y)
         await asyncio.sleep(random.uniform(0.01, 0.04))
 
@@ -200,73 +224,61 @@ async def human_mouse_wander(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_chrome() -> Optional[str]:
-    """
-    Return the path to an available Chrome/Chromium executable, or None to let
-    Playwright resolve it automatically.  Searches:
-      1. CHROME_PATH environment variable
-      2. Playwright's own browser cache (any installed revision)
-      3. Common system locations
-    """
-    import os, glob
-
-    # 1. Explicit env override
+    import os
     env_path = os.environ.get("CHROME_PATH")
     if env_path and Path(env_path).is_file():
         return env_path
 
-    # 2. Playwright cache — pick the newest revision available
-    cache_patterns = [
+    patterns = [
+        str(Path.home() / "AppData/Local/ms-playwright/chromium-*/chrome-win/chrome.exe"),
+        str(Path.home() / "AppData/Local/ms-playwright/chromium_headless_shell-*/chrome-win/headless_shell.exe"),
         str(Path.home() / ".cache/ms-playwright/chromium-*/chrome-linux/chrome"),
         str(Path.home() / ".cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell"),
         "/root/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
         "/root/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell",
     ]
-    for pat in cache_patterns:
+    for pat in patterns:
         matches = sorted(glob.glob(pat))
         if matches:
-            return matches[-1]  # newest revision
+            return matches[-1]
 
-    # 3. System paths
     for candidate in [
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
-        "/snap/bin/chromium",
+        "C:/Program Files/Google/Chrome/Application/chrome.exe",
+        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        "/usr/bin/google-chrome", "/usr/bin/chromium-browser",
+        "/usr/bin/chromium", "/snap/bin/chromium",
     ]:
         if Path(candidate).is_file():
             return candidate
 
-    return None  # let Playwright decide
+    return None
 
 
-async def new_context(playwright, ua: str, viewport: dict) -> tuple:
-    """Create a fresh browser + context with full stealth settings."""
+async def new_context(playwright, ua: str, viewport: dict, load_cookies_flag: bool = True) -> tuple:
     chrome_path = _find_chrome()
-    launch_kwargs: dict = {
+    kwargs: dict = {
         "headless": True,
         "args": [
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
             "--disable-infobars",
-            "--window-size=1366,768",
             "--disable-extensions",
         ],
     }
     if chrome_path:
-        launch_kwargs["executable_path"] = chrome_path
-    browser = await playwright.chromium.launch(**launch_kwargs)
+        kwargs["executable_path"] = chrome_path
+
+    browser = await playwright.chromium.launch(**kwargs)
     context = await browser.new_context(
-        user_agent=ua,
-        viewport=viewport,
-        locale="ar-IQ",
-        timezone_id="Asia/Baghdad",
-        geolocation={"latitude": 33.3152, "longitude": 44.3661},  # Baghdad
+        user_agent=ua, viewport=viewport,
+        locale="ar-IQ", timezone_id="Asia/Baghdad",
+        geolocation={"latitude": 33.3152, "longitude": 44.3661},
         permissions=["geolocation"],
         extra_http_headers={
             "Accept-Language": "ar-IQ,ar;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "sec-ch-ua": '"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"',
+            "sec-ch-ua": '"Chromium";v="120","Google Chrome";v="120","Not-A.Brand";v="99"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
             "Sec-Fetch-Dest": "document",
@@ -277,92 +289,142 @@ async def new_context(playwright, ua: str, viewport: dict) -> tuple:
     )
     await context.add_init_script(f"({STEALTH_JS})()")
 
-    # Block ad/analytics domains
-    async def block_request(route, request):
-        if any(d in request.url for d in BLOCKED_DOMAINS):
+    # Inject saved cookies (login session)
+    if load_cookies_flag:
+        cookies = load_cookies()
+        if cookies:
+            await context.add_cookies(cookies)
+
+    async def _block(route, req):
+        if any(d in req.url for d in BLOCKED_DOMAINS):
             await route.abort()
         else:
             await route.continue_()
+    await context.route("**/*", _block)
 
-    await context.route("**/*", block_request)
     return browser, context
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — collect listing URLs from index pages
+# Login
 # ---------------------------------------------------------------------------
 
-def extract_listing_urls(html: str) -> list[str]:
-    soup = BeautifulSoup(html, "lxml")
-    urls = []
-    for a in soup.select("a[href]"):
-        href = a["href"]
-        # OpenSooq listing URLs contain a numeric post ID
-        if re.search(r"/ar/.+/\d+", href) or re.search(r"post/\d+", href):
-            full = href if href.startswith("http") else f"https://iq.opensooq.com{href}"
-            if full not in urls:
-                urls.append(full)
-    return urls
+async def do_login(email: str, password: str) -> dict:
+    """
+    Log in to OpenSooq using Playwright.
+    Saves cookies on success. Returns {"ok": True} or {"ok": False, "error": "..."}.
+    """
+    ua = random.choice(USER_AGENTS)
+    vp = random.choice(VIEWPORTS)
 
+    async with async_playwright() as pw:
+        browser, context = await new_context(pw, ua, vp, load_cookies_flag=False)
+        page = await context.new_page()
 
-def get_total_pages(html: str) -> int:
-    soup = BeautifulSoup(html, "lxml")
-    nums = []
-    for a in soup.select("ul.pagination li a, .pager a, [class*='pagination'] a, [class*='page'] a"):
-        t = a.get_text(strip=True)
-        if t.isdigit():
-            nums.append(int(t))
-    if nums:
-        return max(nums)
-    el = soup.select_one("[data-last-page], [data-pages]")
-    if el:
         try:
-            return int(el.get("data-last-page") or el.get("data-pages"))
-        except (TypeError, ValueError):
-            pass
-    return 1
+            await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            await jitter_sleep(2.0, 0.5)
 
+            # Fill email
+            email_sel = (
+                "input[type='email'], input[name='email'], "
+                "input[id*='email'], input[placeholder*='email'], "
+                "input[placeholder*='ايميل'], input[name='username']"
+            )
+            await page.fill(email_sel, "")
+            await page.type(email_sel, email, delay=random.randint(60, 120))
+            await jitter_sleep(0.5, 0.2)
 
-async def collect_listing_urls(
-    page: Page,
-    max_pages: int,
-) -> list[str]:
-    """Phase 1: scrape index pages to gather all listing URLs."""
-    all_urls: list[str] = []
+            # Fill password
+            pass_sel = "input[type='password']"
+            await page.fill(pass_sel, "")
+            await page.type(pass_sel, password, delay=random.randint(60, 120))
+            await jitter_sleep(0.8, 0.3)
 
-    print(f"\n[Phase 1] Collecting listing URLs (up to {max_pages} pages) ...")
-    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
-    await jitter_sleep(2.0, 0.5)
-    await human_scroll(page)
+            # Submit
+            submit_sel = (
+                "button[type='submit'], input[type='submit'], "
+                "button:has-text('تسجيل'), button:has-text('دخول'), "
+                "button:has-text('Login'), button:has-text('Sign in')"
+            )
+            await page.click(submit_sel)
+            await page.wait_for_load_state("domcontentloaded", timeout=20000)
+            await jitter_sleep(2.0, 0.5)
 
-    html = await page.content()
-    urls = extract_listing_urls(html)
-    all_urls.extend(urls)
-    total_pages = get_total_pages(html)
-    pages_to_scrape = min(total_pages, max_pages)
-    print(f"  Page 1: {len(urls)} URLs found | Total pages: {total_pages} | Will scan: {pages_to_scrape}")
-
-    for p in range(2, pages_to_scrape + 1):
-        url = f"{BASE_URL}?page={p}"
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await jitter_sleep(random.uniform(2.0, 4.0), 0.8)
-            await human_scroll(page)
+            # Check success — look for logout link or user menu
             html = await page.content()
-            page_urls = extract_listing_urls(html)
-            new = [u for u in page_urls if u not in all_urls]
-            all_urls.extend(new)
-            print(f"  Page {p}: {len(new)} new URLs (total: {len(all_urls)})")
-        except Exception as e:
-            print(f"  [warn] Index page {p} failed: {e}")
-        await jitter_sleep(random.uniform(2.5, 5.0), 1.0)
+            soup = BeautifulSoup(html, "lxml")
+            success = bool(
+                soup.select_one("a[href*='logout'], a[href*='signout'], .user-menu, [class*='userAvatar']")
+                or "logout" in html.lower()
+            )
 
-    print(f"  Collected {len(all_urls)} listing URLs.\n")
-    return all_urls
+            if not success:
+                # Check for error message
+                err_el = soup.select_one(".alert-danger, .error-msg, [class*='error']")
+                err_msg = err_el.get_text(strip=True) if err_el else "Login failed — check credentials."
+                return {"ok": False, "error": err_msg}
+
+            # Save cookies
+            cookies = await context.cookies()
+            save_cookies(cookies)
+            return {"ok": True}
+
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await browser.close()
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — scrape each listing detail page
+# Phone number reveal
+# ---------------------------------------------------------------------------
+
+async def reveal_phone(page: Page) -> str:
+    """Click the 'show phone' button and return the revealed number."""
+    phone_btn_sel = (
+        "button[class*='phone'], button[class*='Phone'], "
+        "a[class*='phone'], a[class*='Phone'], "
+        "[class*='showPhone'], [class*='show-phone'], "
+        "button:has-text('اظهار'), button:has-text('الرقم'), "
+        "button:has-text('Show'), button:has-text('Call'), "
+        "[data-action*='phone'], [data-type*='phone']"
+    )
+    try:
+        btn = page.locator(phone_btn_sel).first
+        if await btn.count() > 0:
+            await btn.scroll_into_view_if_needed()
+            await jitter_sleep(0.5, 0.2)
+            await btn.click()
+            await jitter_sleep(1.5, 0.3)
+
+            # Phone number should now be visible
+            html = await page.content()
+            soup = BeautifulSoup(html, "lxml")
+            for sel in [
+                "[class*='phone'] a[href^='tel:']",
+                "a[href^='tel:']",
+                "[class*='phone']",
+                "[class*='Phone']",
+                "[data-type*='phone']",
+            ]:
+                el = soup.select_one(sel)
+                if el:
+                    number = el.get("href", "").replace("tel:", "") or el.get_text(strip=True)
+                    cleaned = re.sub(r"[^\d+]", "", number)
+                    if len(cleaned) >= 8:
+                        return cleaned
+    except Exception:
+        pass
+
+    # Fallback: extract any phone-like number from page
+    html = await page.content()
+    matches = re.findall(r"(?:07\d{8,9}|\+964\s?\d+)", html)
+    return matches[0] if matches else ""
+
+
+# ---------------------------------------------------------------------------
+# Detail page parser
 # ---------------------------------------------------------------------------
 
 def parse_detail(html: str, url: str) -> Listing:
@@ -375,307 +437,213 @@ def parse_detail(html: str, url: str) -> Listing:
                 return el.get_text(" ", strip=True)
         return ""
 
-    # Listing ID from URL
     m = re.search(r"[/-](\d{6,})", url)
     listing_id = m.group(1) if m else ""
 
-    title = first_text(
-        "h1.postTitle", "h1[class*='title']", ".post-title h1",
-        "h1", ".title", "[class*='PostTitle']",
-    )
+    title = first_text("h1.postTitle","h1[class*='title']","h1",".title","[class*='PostTitle']")
+    price = first_text(".postPrice","[class*='price']","[itemprop='price']",".listing-price")
+    description = first_text(".postDesc","[class*='description']","[itemprop='description']","#postDescription")
+    location = first_text(".postLocation","[class*='location']",".city","[itemprop='addressLocality']")
+    condition = first_text("[class*='condition']","[class*='Condition']","[data-field='condition']")
+    seller_name = first_text(".sellerName","[class*='seller']","[itemprop='name']",".user-name")
 
-    price = first_text(
-        ".postPrice", "[class*='price']", ".price-label",
-        "[itemprop='price']", ".listing-price",
-    )
+    date_el = soup.select_one("time,[class*='date'],[datetime]")
+    date_posted = (date_el.get("datetime") or date_el.get_text(strip=True)) if date_el else ""
 
-    description = first_text(
-        ".postDesc", "[class*='description']", ".desc",
-        "[itemprop='description']", "#postDescription",
-    )
-
-    location = first_text(
-        ".postLocation", "[class*='location']", ".city",
-        "[itemprop='addressLocality']", "[class*='area']",
-    )
-
-    condition = first_text(
-        "[class*='condition']", "[class*='Condition']",
-        "[data-field='condition']",
-    )
-
-    seller_name = first_text(
-        ".sellerName", "[class*='seller']", ".userName",
-        "[itemprop='name']", ".user-name",
-    )
-
-    date_el = soup.select_one("time, [class*='date'], [datetime]")
-    date_posted = ""
-    if date_el:
-        date_posted = date_el.get("datetime") or date_el.get_text(strip=True)
-
-    # Collect ALL images from the detail page
+    # Images
     images: list[str] = []
     for img in soup.select(
-        ".slick-slide img, .gallery img, [class*='gallery'] img, "
-        "[class*='slider'] img, .postImages img, .post-images img, img[data-src], img[src]"
+        ".slick-slide img,.gallery img,[class*='gallery'] img,"
+        "[class*='slider'] img,.postImages img,img[data-src],img[src]"
     ):
         src = img.get("data-src") or img.get("data-original") or img.get("src") or ""
         if src and src.startswith("http") and src not in images:
-            # skip tiny icons/avatars
-            if not any(x in src for x in ["placeholder", "avatar", "icon", "logo", "1x1"]):
+            if not any(x in src for x in ["placeholder","avatar","icon","logo","1x1"]):
                 images.append(src)
 
     return Listing(
-        listing_id=listing_id,
-        title=title,
-        price=price,
-        description=description,
-        location=location,
-        date_posted=date_posted,
-        condition=condition,
-        seller_name=seller_name,
-        url=url,
-        images=images,
+        listing_id=listing_id, title=title, price=price,
+        description=description, location=location, date_posted=date_posted,
+        condition=condition, seller_name=seller_name, phone="", url=url, images=images,
     )
 
 
-async def scrape_detail_page(page: Page, url: str, referer: str) -> Optional[Listing]:
-    """Visit one listing page and return a Listing, or None on failure."""
-    try:
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=30000,
-            referer=referer,
-        )
-        await jitter_sleep(random.uniform(1.5, 3.0), 0.5)
-        await human_mouse_wander(page)
-        await human_scroll(page)
-        await jitter_sleep(random.uniform(0.5, 1.5), 0.3)
+# ---------------------------------------------------------------------------
+# Index page: extract listing URLs
+# ---------------------------------------------------------------------------
 
-        html = await page.content()
-        listing = parse_detail(html, url)
-        return listing
-    except Exception as e:
-        print(f"  [error] {url}: {e}")
-        return None
+def extract_listing_urls(html: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    urls = []
+    for a in soup.select("a[href]"):
+        href = a["href"]
+        if re.search(r"/ar/.+/\d+", href) or re.search(r"post/\d+", href):
+            full = href if href.startswith("http") else f"https://iq.opensooq.com{href}"
+            if full not in urls:
+                urls.append(full)
+    return urls
 
 
 # ---------------------------------------------------------------------------
-# Image downloading
+# Image download
 # ---------------------------------------------------------------------------
-
-def _safe_name(s: str) -> str:
-    return re.sub(r"[^\w-]", "_", s)
-
 
 async def download_listing_images(
-    listing: Listing,
-    images_root: Path,
-    session: aiohttp.ClientSession,
-    sem: asyncio.Semaphore,
+    listing: Listing, images_root: Path,
+    session: aiohttp.ClientSession, sem: asyncio.Semaphore,
 ) -> None:
-    """Download all images for one listing into images/<listing_id>/."""
     if not listing.images:
         return
-    folder = images_root / (listing.listing_id or _safe_name(listing.url[-20:]))
+    folder = images_root / (listing.listing_id or re.sub(r"[^\w-]", "_", listing.url[-20:]))
     folder.mkdir(parents=True, exist_ok=True)
-
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Referer": "https://iq.opensooq.com/",
-    }
+    headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://iq.opensooq.com/"}
 
     for idx, img_url in enumerate(listing.images):
-        ext = Path(urlparse(img_url).path).suffix or ".jpg"
-        ext = re.sub(r"[^a-zA-Z0-9.]", "", ext)[:5]
+        ext = re.sub(r"[^a-zA-Z0-9.]", "", Path(urlparse(img_url).path).suffix or ".jpg")[:5]
         dest = folder / f"{idx:03d}{ext}"
         if dest.exists():
-            listing.local_images.append(str(dest))
+            if str(dest) not in listing.local_images:
+                listing.local_images.append(str(dest))
             continue
         async with sem:
             try:
-                async with session.get(
-                    img_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25)
-                ) as resp:
-                    if resp.status == 200:
-                        dest.write_bytes(await resp.read())
+                async with session.get(img_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25)) as r:
+                    if r.status == 200:
+                        dest.write_bytes(await r.read())
                         listing.local_images.append(str(dest))
-                    else:
-                        print(f"    [warn] Image HTTP {resp.status}: {img_url}")
             except Exception as e:
-                print(f"    [warn] Image download failed: {e}")
+                print(f"  [warn] image: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Output helpers
+# Core scrape function (called per user request)
 # ---------------------------------------------------------------------------
 
-def listing_to_row(l: Listing) -> dict:
-    d = asdict(l) if hasattr(l, "__dataclass_fields__") else l.__dict__.copy()
-    d["images"] = " | ".join(l.images)
-    d["local_images"] = " | ".join(l.local_images)
-    return d
+def is_listing_url(url: str) -> bool:
+    return bool(re.search(r"[/-](\d{7,})", url))
 
 
-def asdict(l: Listing) -> dict:
-    return {f.name: getattr(l, f.name) for f in dc_fields(l)}
-
-
-def save_csv(listings: list[Listing], path: Path) -> None:
-    if not listings:
-        return
-    row_keys = list(asdict(listings[0]).keys())
-    row_keys[row_keys.index("images")] = "images"
-    row_keys[row_keys.index("local_images")] = "local_images"
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=row_keys)
-        writer.writeheader()
-        for l in listings:
-            row = asdict(l)
-            row["images"] = " | ".join(l.images)
-            row["local_images"] = " | ".join(l.local_images)
-            writer.writerow(row)
-    print(f"Saved {len(listings)} listings → {path}")
-
-
-def save_json(listings: list[Listing], path: Path) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump([asdict(l) for l in listings], f, ensure_ascii=False, indent=2)
-    print(f"Saved {len(listings)} listings → {path}")
-
-
-def load_state(state_file: Path) -> set[str]:
-    """Return set of already-scraped URLs."""
-    if not state_file.exists():
-        return set()
-    try:
-        return set(json.loads(state_file.read_text()))
-    except Exception:
-        return set()
-
-
-def save_state(done: set[str], state_file: Path) -> None:
-    state_file.write_text(json.dumps(list(done)))
-
-
-# ---------------------------------------------------------------------------
-# Main scrape orchestration
-# ---------------------------------------------------------------------------
-
-async def scrape(
-    max_pages: int = 5,
-    output_csv: Optional[str] = "listings.csv",
-    output_json: Optional[str] = "listings.json",
+async def scrape_page(
+    url: str,
     images_dir: Optional[str] = "images",
-    delay_between: float = 4.0,
-    resume: bool = True,
+    stop_event: Optional[threading.Event] = None,
+    on_progress: Optional[Callable] = None,
 ) -> list[Listing]:
+    """Scrape one URL. If it's a category page, visits each listing on it."""
+    if stop_event is None:
+        stop_event = threading.Event()
 
-    state_file = Path(".scrape_state.json")
-    done_urls: set[str] = load_state(state_file) if resume else set()
-    if done_urls:
-        print(f"[resume] Skipping {len(done_urls)} already-scraped listings.")
+    def progress(**kw):
+        write_state(**kw)
+        if on_progress:
+            on_progress(kw)
 
-    ua = random.choice(USER_AGENTS)
-    vp = random.choice(VIEWPORTS)
+    ua  = random.choice(USER_AGENTS)
+    vp  = random.choice(VIEWPORTS)
+    results: list[Listing] = []
+    logged_in = is_logged_in()
 
-    all_listings: list[Listing] = []
-    img_sem = asyncio.Semaphore(6)  # max concurrent image downloads
+    progress(status="scraping", url=url, current=0, total=0,
+             message="Starting browser..." + (" (logged in)" if logged_in else " (guest)"))
 
     async with async_playwright() as pw:
-        browser, context = await new_context(pw, ua, vp)
+        browser, context = await new_context(pw, ua, vp, load_cookies_flag=True)
         page = await context.new_page()
 
-        # ---- Phase 1: collect URLs ----------------------------------------
-        listing_urls = await collect_listing_urls(page, max_pages)
-        pending = [u for u in listing_urls if u not in done_urls]
-        print(f"[Phase 2] Scraping {len(pending)} listing detail pages ...")
+        try:
+            if is_listing_url(url):
+                # ── Single listing ───────────────────────────────────────────
+                progress(message="Fetching listing...", total=1, current=0)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await jitter_sleep(2.0, 0.5)
+                await human_mouse_wander(page)
+                await human_scroll(page)
 
-        # ---- Phase 2: scrape each listing one at a time --------------------
-        async with aiohttp.ClientSession() as http_session:
-            for i, url in enumerate(tqdm(pending, desc="Listings")):
-                # Rotate UA/viewport every ~15 listings to vary fingerprint
-                if i > 0 and i % 15 == 0:
-                    await browser.close()
-                    ua = random.choice(USER_AGENTS)
-                    vp = random.choice(VIEWPORTS)
-                    browser, context = await new_context(pw, ua, vp)
-                    page = await context.new_page()
-                    print(f"  [stealth] Rotated browser profile at listing {i}")
+                # Reveal phone if logged in
+                phone = ""
+                if logged_in:
+                    progress(message="Revealing phone number...")
+                    phone = await reveal_phone(page)
 
-                referer = BASE_URL if i == 0 else (all_listings[-1].url if all_listings else BASE_URL)
-                listing = await scrape_detail_page(page, url, referer)
+                html = await page.content()
+                listing = parse_detail(html, url)
+                listing.phone = phone
+                progress(current=1, message=f"Parsed: {listing.title or url}")
 
-                if listing:
-                    # Download images immediately after scraping this listing
-                    if images_dir:
-                        await download_listing_images(
-                            listing, Path(images_dir), http_session, img_sem
-                        )
-                    all_listings.append(listing)
-                    done_urls.add(url)
-                    save_state(done_urls, state_file)
+                if images_dir:
+                    progress(message="Downloading images...")
+                    async with aiohttp.ClientSession() as http:
+                        sem = asyncio.Semaphore(6)
+                        await download_listing_images(listing, Path(images_dir), http, sem)
 
-                # Occasional longer pause (~every 20 listings) to avoid rate limits
-                if (i + 1) % 20 == 0:
-                    pause = random.uniform(15, 30)
-                    print(f"  [cool-down] Pausing {pause:.0f}s after {i+1} listings ...")
-                    await asyncio.sleep(pause)
-                else:
-                    await jitter_sleep(delay_between, delay_between * 0.4)
+                save_listing(listing)
+                results.append(listing)
 
-        await browser.close()
+            else:
+                # ── Category / index page ────────────────────────────────────
+                progress(message="Fetching index page...")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await jitter_sleep(2.0, 0.5)
+                await human_scroll(page)
+                html = await page.content()
 
-    print(f"\nDone. {len(all_listings)} listings scraped.")
+                listing_urls = extract_listing_urls(html)
+                total = len(listing_urls)
+                progress(total=total, message=f"Found {total} listings on page")
 
-    if output_csv:
-        save_csv(all_listings, Path(output_csv))
-    if output_json:
-        save_json(all_listings, Path(output_json))
+                scraped_urls = {l.get("url") for l in load_listings()}
+                pending = [u for u in listing_urls if u not in scraped_urls]
+                skip = total - len(pending)
+                if skip:
+                    progress(message=f"{skip} already scraped, processing {len(pending)} new")
 
-    # Clean up state file on full success
-    if not pending or len(all_listings) == len(pending):
-        state_file.unlink(missing_ok=True)
+                async with aiohttp.ClientSession() as http:
+                    img_sem = asyncio.Semaphore(6)
 
-    return all_listings
+                    for i, lurl in enumerate(pending):
+                        if stop_event.is_set():
+                            progress(status="stopped", message="Stopped by user.")
+                            break
 
+                        progress(current=i+1, total=len(pending),
+                                 message=f"Listing {i+1}/{len(pending)}: {lurl}")
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+                        try:
+                            await page.goto(lurl, wait_until="domcontentloaded",
+                                            timeout=30000, referer=url)
+                            await jitter_sleep(random.uniform(1.5, 3.0), 0.5)
+                            await human_mouse_wander(page)
+                            await human_scroll(page)
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Scrape OpenSooq IQ mobile & tablet listings (one by one, stealth mode)"
-    )
-    parser.add_argument("--pages", type=int, default=5,
-                        help="Index pages to scan for URLs (default: 5)")
-    parser.add_argument("--csv", type=str, default="listings.csv")
-    parser.add_argument("--json", type=str, default="listings.json")
-    parser.add_argument("--no-csv", action="store_true")
-    parser.add_argument("--no-json", action="store_true")
-    parser.add_argument("--images-dir", type=str, default="images",
-                        help="Directory for downloaded images (default: images/)")
-    parser.add_argument("--no-images", action="store_true")
-    parser.add_argument("--delay", type=float, default=4.0,
-                        help="Base seconds between listing requests (default: 4.0)")
-    parser.add_argument("--no-resume", action="store_true",
-                        help="Ignore previous progress and start fresh")
-    args = parser.parse_args()
+                            phone = ""
+                            if logged_in:
+                                phone = await reveal_phone(page)
 
-    asyncio.run(
-        scrape(
-            max_pages=args.pages,
-            output_csv=None if args.no_csv else args.csv,
-            output_json=None if args.no_json else args.json,
-            images_dir=None if args.no_images else args.images_dir,
-            delay_between=args.delay,
-            resume=not args.no_resume,
-        )
-    )
+                            html = await page.content()
+                            listing = parse_detail(html, lurl)
+                            listing.phone = phone
 
+                            if images_dir:
+                                await download_listing_images(listing, Path(images_dir), http, img_sem)
 
-if __name__ == "__main__":
-    main()
+                            save_listing(listing)
+                            results.append(listing)
+                        except Exception as e:
+                            print(f"  [error] {lurl}: {e}")
+
+                        if i < len(pending) - 1 and not stop_event.is_set():
+                            await jitter_sleep(random.uniform(3.0, 6.0), 1.0)
+
+        finally:
+            # Refresh cookies (session may have been extended)
+            try:
+                fresh = await context.cookies()
+                if fresh:
+                    save_cookies(fresh)
+            except Exception:
+                pass
+            await browser.close()
+
+    if not stop_event.is_set():
+        progress(status="done", message=f"Done — {len(results)} listings scraped.")
+    return results
