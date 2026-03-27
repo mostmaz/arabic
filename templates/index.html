@@ -81,8 +81,12 @@
   </div>
   <p class="modal-note">Log in to reveal full phone numbers on listings.</p>
   <div id="loginError" class="alert-error hidden"></div>
-  <label class="field-label">Email / Username</label>
-  <input id="loginEmail" class="field-input" type="email" placeholder="you@example.com"/>
+  <label class="field-label">Mobile Number</label>
+  <div class="phone-field-wrap">
+    <span class="phone-prefix">🇮🇶 +964</span>
+    <input id="loginPhone" class="field-input phone-input" type="tel"
+           placeholder="7XXXXXXXXX" autocomplete="tel"/>
+  </div>
   <label class="field-label">Password</label>
   <input id="loginPassword" class="field-input" type="password" placeholder="••••••••"/>
   <div class="modal-actions">

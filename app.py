@@ -158,14 +158,14 @@ def api_login():
         return jsonify({"error": "Cannot log in while scraping is in progress."}), 409
 
     body = request.get_json(silent=True) or {}
-    email    = (body.get("email") or "").strip()
+    phone    = (body.get("phone") or "").strip()
     password = (body.get("password") or "")
 
-    if not email or not password:
-        return jsonify({"error": "email and password are required"}), 400
+    if not phone or not password:
+        return jsonify({"error": "phone and password are required"}), 400
 
     write_state(status="logging_in", message="Logging in to OpenSooq...")
-    result = asyncio.run(do_login(email, password))
+    result = asyncio.run(do_login(phone, password))
     if result["ok"]:
         write_state(status="idle", message="Logged in successfully.")
         return jsonify({"status": "ok", "logged_in": True})

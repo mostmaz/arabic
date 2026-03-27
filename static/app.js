@@ -242,10 +242,10 @@ function openLoginModal() {
   apiFetch("/api/login/status").then(s => {
     document.getElementById("logoutBtn").classList.toggle("hidden", !s.logged_in);
     if (s.logged_in) {
-      document.getElementById("loginEmail").disabled    = true;
+      document.getElementById("loginPhone").disabled    = true;
       document.getElementById("loginPassword").disabled = true;
     } else {
-      document.getElementById("loginEmail").disabled    = false;
+      document.getElementById("loginPhone").disabled    = false;
       document.getElementById("loginPassword").disabled = false;
     }
   });
@@ -257,13 +257,13 @@ function closeLoginModal() {
 }
 
 async function submitLogin() {
-  const email    = document.getElementById("loginEmail").value.trim();
+  const phone    = document.getElementById("loginPhone").value.trim();
   const password = document.getElementById("loginPassword").value;
   const errEl    = document.getElementById("loginError");
   const spinner  = document.getElementById("loginSpinner");
 
-  if (!email || !password) {
-    errEl.textContent = "Email and password are required.";
+  if (!phone || !password) {
+    errEl.textContent = "Mobile number and password are required.";
     errEl.classList.remove("hidden");
     return;
   }
@@ -271,7 +271,7 @@ async function submitLogin() {
   errEl.classList.add("hidden");
   spinner.classList.remove("hidden");
 
-  const res = await apiFetch("/api/login", "POST", { email, password });
+  const res = await apiFetch("/api/login", "POST", { phone, password });
   spinner.classList.add("hidden");
 
   if (res.error) {

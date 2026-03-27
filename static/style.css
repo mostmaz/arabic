@@ -296,6 +296,25 @@ body {
 }
 .field-input:focus { border-color: var(--primary); }
 
+.phone-field-wrap {
+  display: flex; align-items: center;
+  border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; margin-bottom: 14px;
+}
+.phone-field-wrap:focus-within { border-color: var(--primary); }
+.phone-prefix {
+  padding: 0 12px; background: var(--bg);
+  border-right: 1px solid var(--border);
+  font-size: 14px; white-space: nowrap;
+  height: 40px; display: flex; align-items: center; gap: 5px;
+  color: var(--muted); flex-shrink: 0;
+}
+.phone-input {
+  border: none !important; margin-bottom: 0 !important;
+  border-radius: 0 !important; flex: 1;
+}
+.phone-input:focus { outline: none; }
+
 .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .alert-error {

@@ -309,13 +309,18 @@ async def new_context(playwright, ua: str, viewport: dict, load_cookies_flag: bo
 # Login
 # ---------------------------------------------------------------------------
 
-async def do_login(email: str, password: str) -> dict:
+async def do_login(phone: str, password: str) -> dict:
     """
-    Log in to OpenSooq using Playwright.
+    Log in to OpenSooq with mobile number + password (two-step flow).
+    Step 1: enter phone number → click Next
+    Step 2: enter password → submit
     Saves cookies on success. Returns {"ok": True} or {"ok": False, "error": "..."}.
     """
     ua = random.choice(USER_AGENTS)
     vp = random.choice(VIEWPORTS)
+
+    # Strip country code prefix if user included it (e.g. +964 or 00964)
+    phone = re.sub(r"^\+964|^00964", "", phone.strip()).strip()
 
     async with async_playwright() as pw:
         browser, context = await new_context(pw, ua, vp, load_cookies_flag=False)
@@ -325,47 +330,68 @@ async def do_login(email: str, password: str) -> dict:
             await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
             await jitter_sleep(2.0, 0.5)
 
-            # Fill email
-            email_sel = (
-                "input[type='email'], input[name='email'], "
-                "input[id*='email'], input[placeholder*='email'], "
-                "input[placeholder*='ايميل'], input[name='username']"
+            # ── Step 1: phone number field ───────────────────────────────────
+            phone_sel = (
+                "input[type='tel'], "
+                "input[name='mobile'], input[name='phone'], input[name='mobileNumber'], "
+                "input[id*='mobile'], input[id*='phone'], "
+                "input[placeholder*='mobile'], input[placeholder*='phone'], "
+                "input[placeholder*='رقم'], input[placeholder*='موبايل']"
             )
-            await page.fill(email_sel, "")
-            await page.type(email_sel, email, delay=random.randint(60, 120))
-            await jitter_sleep(0.5, 0.2)
+            await page.wait_for_selector(phone_sel, timeout=10000)
+            await page.click(phone_sel)
+            await jitter_sleep(0.4, 0.1)
+            await page.fill(phone_sel, "")
+            await page.type(phone_sel, phone, delay=random.randint(70, 130))
+            await jitter_sleep(0.8, 0.2)
 
-            # Fill password
+            # Click "Next" button
+            next_sel = (
+                "button:has-text('Next'), button:has-text('التالي'), "
+                "button[type='submit'], input[type='submit']"
+            )
+            await page.click(next_sel)
+            await jitter_sleep(2.0, 0.5)
+
+            # ── Step 2: password field ───────────────────────────────────────
             pass_sel = "input[type='password']"
+            try:
+                await page.wait_for_selector(pass_sel, timeout=10000)
+            except Exception:
+                # Maybe it went straight to OTP or error
+                html = await page.content()
+                soup = BeautifulSoup(html, "lxml")
+                err_el = soup.select_one("[class*='error'], [class*='alert'], .invalid")
+                err_msg = err_el.get_text(strip=True) if err_el else "Phone step failed — check number."
+                return {"ok": False, "error": err_msg}
+
             await page.fill(pass_sel, "")
-            await page.type(pass_sel, password, delay=random.randint(60, 120))
+            await page.type(pass_sel, password, delay=random.randint(70, 130))
             await jitter_sleep(0.8, 0.3)
 
-            # Submit
+            # Submit password
             submit_sel = (
                 "button[type='submit'], input[type='submit'], "
-                "button:has-text('تسجيل'), button:has-text('دخول'), "
-                "button:has-text('Login'), button:has-text('Sign in')"
+                "button:has-text('Login'), button:has-text('دخول'), "
+                "button:has-text('تسجيل الدخول'), button:has-text('Sign in')"
             )
             await page.click(submit_sel)
             await page.wait_for_load_state("domcontentloaded", timeout=20000)
-            await jitter_sleep(2.0, 0.5)
+            await jitter_sleep(2.5, 0.5)
 
-            # Check success — look for logout link or user menu
+            # ── Check success ────────────────────────────────────────────────
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
             success = bool(
-                soup.select_one("a[href*='logout'], a[href*='signout'], .user-menu, [class*='userAvatar']")
+                soup.select_one("a[href*='logout'], a[href*='signout'], .user-menu, [class*='userAvatar'], [class*='UserAvatar']")
                 or "logout" in html.lower()
             )
 
             if not success:
-                # Check for error message
-                err_el = soup.select_one(".alert-danger, .error-msg, [class*='error']")
-                err_msg = err_el.get_text(strip=True) if err_el else "Login failed — check credentials."
+                err_el = soup.select_one("[class*='error'], [class*='alert'], .invalid, .alert-danger")
+                err_msg = err_el.get_text(strip=True) if err_el else "Login failed — check phone number and password."
                 return {"ok": False, "error": err_msg}
 
-            # Save cookies
             cookies = await context.cookies()
             save_cookies(cookies)
             return {"ok": True}
