@@ -535,7 +535,7 @@ def parse_detail(html: str, url: str) -> Listing:
     ):
         src = img.get("data-src") or img.get("data-original") or img.get("src") or ""
         if src and src.startswith("http") and src not in images:
-            if not any(x in src for x in ["placeholder","avatar","icon","logo","1x1"]):
+            if not any(x in src for x in ["placeholder","avatar","icon","logo","1x1","000.svg"]):
                 images.append(src)
 
     return Listing(
@@ -575,7 +575,7 @@ async def download_listing_images(
     folder.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://iq.opensooq.com/"}
 
-    for idx, img_url in enumerate(listing.images):
+    for idx, img_url in enumerate(u for u in listing.images if "000.svg" not in u):
         ext = re.sub(r"[^a-zA-Z0-9.]", "", Path(urlparse(img_url).path).suffix or ".jpg")[:5]
         dest = folder / f"{idx:03d}{ext}"
         if dest.exists():
