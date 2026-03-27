@@ -15,6 +15,7 @@ Provides:
 
 import asyncio
 import json
+import logging
 import threading
 from pathlib import Path
 
@@ -27,6 +28,16 @@ from scraper import (
 )
 
 app = Flask(__name__)
+
+# Suppress access log noise for frequent polling endpoints
+_SILENT_PATHS = {"/api/status", "/api/listings"}
+
+class _SilentFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(p in msg for p in _SILENT_PATHS)
+
+logging.getLogger("werkzeug").addFilter(_SilentFilter())
 
 IMAGES_DIR = Path("images")
 
