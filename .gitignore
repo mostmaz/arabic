@@ -12,6 +12,7 @@ env/
 listings.csv
 listings.json
 images/
+.scrape_state.json
 
 # Playwright
 /playwright-report/

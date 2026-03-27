@@ -1,16 +1,21 @@
 """
 OpenSooq Mobile & Tablet Listings Scraper
 Scrapes: https://iq.opensooq.com/ar/موبايل-تابلت
+
+Two-phase approach:
+  Phase 1 — collect listing URLs from index pages
+  Phase 2 — visit each listing detail page one at a time, extract full data
 """
 
 import asyncio
 import csv
 import json
+import math
 import random
 import re
 import argparse
 from pathlib import Path
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict, field, fields as dc_fields
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -20,367 +25,600 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 
-IMAGE_DIR = Path("images")
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+BASE_URL = (
+    "https://iq.opensooq.com/ar/%D9%85%D9%88%D8%A8%D8%A7%D9%8A%D9%84-%D8%AA%D8%A7%D8%A8%D9%84%D8%AA"
+)
+
+# Realistic desktop Chrome user agents
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.0.0",
+]
+
+VIEWPORTS = [
+    {"width": 1366, "height": 768},
+    {"width": 1440, "height": 900},
+    {"width": 1920, "height": 1080},
+    {"width": 1280, "height": 800},
+    {"width": 1536, "height": 864},
+]
+
+# Domains to block (ads, analytics, tracking) — speeds up loads + less fingerprinting
+BLOCKED_DOMAINS = [
+    "google-analytics.com", "googletagmanager.com", "facebook.net",
+    "facebook.com/tr", "doubleclick.net", "googlesyndication.com",
+    "scorecardresearch.com", "hotjar.com", "segment.com",
+    "amplitude.com", "mixpanel.com", "intercom.io",
+    "criteo.com", "taboola.com", "outbrain.com",
+]
+
+# Stealth JS injected into every page before any script runs
+STEALTH_JS = """
+() => {
+    // 1. Hide webdriver flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // 2. Realistic plugins list
+    const pluginData = [
+        { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',                description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+        { name: 'Native Client',      filename: 'internal-nacl-plugin',               description: '' },
+    ];
+    const pluginArray = Object.create(PluginArray.prototype);
+    pluginData.forEach((p, i) => {
+        const plugin = Object.create(Plugin.prototype);
+        Object.defineProperty(plugin, 'name',        { value: p.name });
+        Object.defineProperty(plugin, 'filename',    { value: p.filename });
+        Object.defineProperty(plugin, 'description', { value: p.description });
+        pluginArray[i] = plugin;
+    });
+    Object.defineProperty(pluginArray, 'length', { value: pluginData.length });
+    pluginArray.item      = (i) => pluginArray[i];
+    pluginArray.namedItem = (name) => pluginData.find(p => p.name === name) || null;
+    pluginArray.refresh   = () => {};
+    Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
+
+    // 3. Realistic language list
+    Object.defineProperty(navigator, 'languages', { get: () => ['ar-IQ', 'ar', 'en-US', 'en'] });
+
+    // 4. Inject chrome runtime object
+    if (!window.chrome) {
+        window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+    }
+
+    // 5. Permissions — return realistic state
+    const _origQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (_origQuery) {
+        window.navigator.permissions.query = (params) =>
+            params.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : _origQuery.call(window.navigator.permissions, params);
+    }
+
+    // 6. Hardware / memory — realistic values
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    try { Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 }); } catch(_) {}
+
+    // 7. Subtle canvas noise — breaks canvas fingerprinting
+    const _noise = (Math.random() * 2) | 0;  // 0 or 1
+    const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {
+        const ctx = this.getContext('2d');
+        if (ctx) {
+            const img = ctx.getImageData(0, 0, this.width || 1, this.height || 1);
+            for (let i = 0; i < img.data.length; i += 400) img.data[i] ^= _noise;
+            ctx.putImageData(img, 0, 0);
+        }
+        return _toDataURL.apply(this, [type, ...args]);
+    };
+
+    // 8. Hide automation in toString checks
+    const _nativeToString = Function.prototype.toString;
+    Function.prototype.toString = function() {
+        if (this === window.navigator.permissions.query) return 'function query() { [native code] }';
+        return _nativeToString.call(this);
+    };
+}
+"""
 
 
-BASE_URL = "https://iq.opensooq.com/ar/%D9%85%D9%88%D8%A8%D8%A7%D9%8A%D9%84-%D8%AA%D8%A7%D8%A8%D9%84%D8%AA"
-
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Listing:
+    listing_id: str
     title: str
     price: str
+    description: str
     location: str
     date_posted: str
+    condition: str
+    seller_name: str
     url: str
-    image_url: str
-    listing_id: str
-    local_image: str = ""  # path to downloaded image on disk
+    images: list = field(default_factory=list)       # all remote image URLs
+    local_images: list = field(default_factory=list)  # downloaded local paths
 
 
-async def random_delay(min_ms: int = 800, max_ms: int = 2500) -> None:
-    """Sleep a random amount to mimic human browsing."""
-    await asyncio.sleep(random.uniform(min_ms / 1000, max_ms / 1000))
+# ---------------------------------------------------------------------------
+# Human-like helpers
+# ---------------------------------------------------------------------------
+
+async def jitter_sleep(base_s: float, jitter_s: float = 0.5) -> None:
+    """Sleep for base_s ± gaussian jitter."""
+    t = base_s + random.gauss(0, jitter_s)
+    await asyncio.sleep(max(0.1, t))
 
 
-def _image_filename(listing_id: str, image_url: str) -> str:
-    """Derive a safe local filename from listing_id + original extension."""
-    ext = Path(urlparse(image_url).path).suffix or ".jpg"
-    ext = re.sub(r"[^a-zA-Z0-9.]", "", ext)[:5]  # sanitise
-    safe_id = re.sub(r"[^\w-]", "_", listing_id) if listing_id else "unknown"
-    return f"{safe_id}{ext}"
+async def human_scroll(page: Page) -> None:
+    """Scroll down in natural increments, then back up a little."""
+    height = await page.evaluate("document.body.scrollHeight")
+    viewport_h = page.viewport_size["height"] if page.viewport_size else 768
+    pos = 0
+    while pos < height:
+        step = random.randint(200, 500)
+        pos = min(pos + step, height)
+        await page.evaluate(f"window.scrollTo({{top: {pos}, behavior: 'smooth'}})")
+        await asyncio.sleep(random.uniform(0.08, 0.25))
+    # small scroll back up — human behaviour
+    await asyncio.sleep(random.uniform(0.3, 0.7))
+    await page.evaluate(f"window.scrollTo({{top: {max(0, pos - random.randint(100, 300))}, behavior: 'smooth'}})")
+    await asyncio.sleep(random.uniform(0.2, 0.5))
 
 
-async def download_images(
-    listings: list["Listing"],
-    images_dir: Path,
-    concurrency: int = 8,
-) -> None:
-    """Download listing images concurrently; skips already-downloaded files."""
-    images_dir.mkdir(parents=True, exist_ok=True)
-
-    sem = asyncio.Semaphore(concurrency)
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://iq.opensooq.com/",
-    }
-
-    async def fetch_one(session: aiohttp.ClientSession, listing: "Listing") -> None:
-        if not listing.image_url:
-            return
-        filename = _image_filename(listing.listing_id, listing.image_url)
-        dest = images_dir / filename
-        if dest.exists():
-            listing.local_image = str(dest)
-            return
-        async with sem:
-            try:
-                async with session.get(
-                    listing.image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
-                ) as resp:
-                    if resp.status == 200:
-                        dest.write_bytes(await resp.read())
-                        listing.local_image = str(dest)
-                    else:
-                        print(f"[warn] Image {resp.status}: {listing.image_url}")
-            except Exception as e:
-                print(f"[warn] Failed to download image for {listing.listing_id}: {e}")
-
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_one(session, l) for l in listings if l.image_url]
-        for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Downloading images"):
-            await coro
+async def human_mouse_wander(page: Page) -> None:
+    """Move mouse along a bezier-like path to a random point on the page."""
+    vp = page.viewport_size or {"width": 1366, "height": 768}
+    # pick a random target
+    tx = random.randint(50, vp["width"] - 50)
+    ty = random.randint(50, vp["height"] - 50)
+    # intermediate control point
+    cx = random.randint(50, vp["width"] - 50)
+    cy = random.randint(50, vp["height"] - 50)
+    steps = random.randint(12, 25)
+    for i in range(steps + 1):
+        t = i / steps
+        # quadratic bezier
+        x = int((1 - t) ** 2 * (vp["width"] // 2) + 2 * (1 - t) * t * cx + t ** 2 * tx)
+        y = int((1 - t) ** 2 * (vp["height"] // 2) + 2 * (1 - t) * t * cy + t ** 2 * ty)
+        await page.mouse.move(x, y)
+        await asyncio.sleep(random.uniform(0.01, 0.04))
 
 
-async def setup_browser(playwright) -> tuple:
-    """Launch a stealth-ish Chromium browser."""
+# ---------------------------------------------------------------------------
+# Browser setup
+# ---------------------------------------------------------------------------
+
+async def new_context(playwright, ua: str, viewport: dict) -> tuple:
+    """Create a fresh browser + context with full stealth settings."""
     browser = await playwright.chromium.launch(
         headless=True,
         args=[
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
+            "--disable-infobars",
+            "--window-size=1366,768",
+            "--disable-extensions",
         ],
     )
     context = await browser.new_context(
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        viewport={"width": 1366, "height": 768},
+        user_agent=ua,
+        viewport=viewport,
         locale="ar-IQ",
+        timezone_id="Asia/Baghdad",
+        geolocation={"latitude": 33.3152, "longitude": 44.3661},  # Baghdad
+        permissions=["geolocation"],
         extra_http_headers={
-            "Accept-Language": "ar,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ar-IQ,ar;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "sec-ch-ua": '"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Upgrade-Insecure-Requests": "1",
         },
     )
-    # Remove webdriver fingerprint
-    await context.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
+    await context.add_init_script(f"({STEALTH_JS})()")
+
+    # Block ad/analytics domains
+    async def block_request(route, request):
+        if any(d in request.url for d in BLOCKED_DOMAINS):
+            await route.abort()
+        else:
+            await route.continue_()
+
+    await context.route("**/*", block_request)
     return browser, context
 
 
-def parse_listings(html: str) -> list[Listing]:
-    """Parse listing cards from page HTML."""
-    soup = BeautifulSoup(html, "lxml")
-    listings = []
+# ---------------------------------------------------------------------------
+# Phase 1 — collect listing URLs from index pages
+# ---------------------------------------------------------------------------
 
-    # OpenSooq listing cards — try multiple selector patterns
-    cards = (
-        soup.select("li.postItem")
-        or soup.select("div.postItem")
-        or soup.select("[data-postid]")
-        or soup.select(".listing-item")
-        or soup.select("article.post-card")
+def extract_listing_urls(html: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    urls = []
+    for a in soup.select("a[href]"):
+        href = a["href"]
+        # OpenSooq listing URLs contain a numeric post ID
+        if re.search(r"/ar/.+/\d+", href) or re.search(r"post/\d+", href):
+            full = href if href.startswith("http") else f"https://iq.opensooq.com{href}"
+            if full not in urls:
+                urls.append(full)
+    return urls
+
+
+def get_total_pages(html: str) -> int:
+    soup = BeautifulSoup(html, "lxml")
+    nums = []
+    for a in soup.select("ul.pagination li a, .pager a, [class*='pagination'] a, [class*='page'] a"):
+        t = a.get_text(strip=True)
+        if t.isdigit():
+            nums.append(int(t))
+    if nums:
+        return max(nums)
+    el = soup.select_one("[data-last-page], [data-pages]")
+    if el:
+        try:
+            return int(el.get("data-last-page") or el.get("data-pages"))
+        except (TypeError, ValueError):
+            pass
+    return 1
+
+
+async def collect_listing_urls(
+    page: Page,
+    max_pages: int,
+) -> list[str]:
+    """Phase 1: scrape index pages to gather all listing URLs."""
+    all_urls: list[str] = []
+
+    print(f"\n[Phase 1] Collecting listing URLs (up to {max_pages} pages) ...")
+    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+    await jitter_sleep(2.0, 0.5)
+    await human_scroll(page)
+
+    html = await page.content()
+    urls = extract_listing_urls(html)
+    all_urls.extend(urls)
+    total_pages = get_total_pages(html)
+    pages_to_scrape = min(total_pages, max_pages)
+    print(f"  Page 1: {len(urls)} URLs found | Total pages: {total_pages} | Will scan: {pages_to_scrape}")
+
+    for p in range(2, pages_to_scrape + 1):
+        url = f"{BASE_URL}?page={p}"
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await jitter_sleep(random.uniform(2.0, 4.0), 0.8)
+            await human_scroll(page)
+            html = await page.content()
+            page_urls = extract_listing_urls(html)
+            new = [u for u in page_urls if u not in all_urls]
+            all_urls.extend(new)
+            print(f"  Page {p}: {len(new)} new URLs (total: {len(all_urls)})")
+        except Exception as e:
+            print(f"  [warn] Index page {p} failed: {e}")
+        await jitter_sleep(random.uniform(2.5, 5.0), 1.0)
+
+    print(f"  Collected {len(all_urls)} listing URLs.\n")
+    return all_urls
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — scrape each listing detail page
+# ---------------------------------------------------------------------------
+
+def parse_detail(html: str, url: str) -> Listing:
+    soup = BeautifulSoup(html, "lxml")
+
+    def first_text(*selectors) -> str:
+        for sel in selectors:
+            el = soup.select_one(sel)
+            if el:
+                return el.get_text(" ", strip=True)
+        return ""
+
+    # Listing ID from URL
+    m = re.search(r"[/-](\d{6,})", url)
+    listing_id = m.group(1) if m else ""
+
+    title = first_text(
+        "h1.postTitle", "h1[class*='title']", ".post-title h1",
+        "h1", ".title", "[class*='PostTitle']",
     )
 
-    for card in cards:
-        try:
-            # Listing ID
-            listing_id = (
-                card.get("data-postid")
-                or card.get("data-id")
-                or card.get("id", "").replace("post_", "")
-                or ""
-            )
+    price = first_text(
+        ".postPrice", "[class*='price']", ".price-label",
+        "[itemprop='price']", ".listing-price",
+    )
 
-            # Title
-            title_el = (
-                card.select_one(".postTitle")
-                or card.select_one(".listing-title")
-                or card.select_one("h2")
-                or card.select_one("h3")
-                or card.select_one("[class*='title']")
-            )
-            title = title_el.get_text(strip=True) if title_el else ""
+    description = first_text(
+        ".postDesc", "[class*='description']", ".desc",
+        "[itemprop='description']", "#postDescription",
+    )
 
-            # Price
-            price_el = (
-                card.select_one(".postPrice")
-                or card.select_one(".price")
-                or card.select_one("[class*='price']")
-            )
-            price = price_el.get_text(strip=True) if price_el else ""
+    location = first_text(
+        ".postLocation", "[class*='location']", ".city",
+        "[itemprop='addressLocality']", "[class*='area']",
+    )
 
-            # Location
-            location_el = (
-                card.select_one(".postLocation")
-                or card.select_one(".location")
-                or card.select_one("[class*='location']")
-                or card.select_one("[class*='city']")
-            )
-            location = location_el.get_text(strip=True) if location_el else ""
+    condition = first_text(
+        "[class*='condition']", "[class*='Condition']",
+        "[data-field='condition']",
+    )
 
-            # Date
-            date_el = (
-                card.select_one(".postDate")
-                or card.select_one("time")
-                or card.select_one("[class*='date']")
-                or card.select_one("[datetime]")
-            )
-            if date_el:
-                date_posted = date_el.get("datetime") or date_el.get_text(strip=True)
-            else:
-                date_posted = ""
+    seller_name = first_text(
+        ".sellerName", "[class*='seller']", ".userName",
+        "[itemprop='name']", ".user-name",
+    )
 
-            # URL
-            link_el = card.select_one("a[href]")
-            if link_el:
-                href = link_el["href"]
-                url = href if href.startswith("http") else f"https://iq.opensooq.com{href}"
-            else:
-                url = ""
+    date_el = soup.select_one("time, [class*='date'], [datetime]")
+    date_posted = ""
+    if date_el:
+        date_posted = date_el.get("datetime") or date_el.get_text(strip=True)
 
-            # Image
-            img_el = card.select_one("img[src]") or card.select_one("img[data-src]")
-            if img_el:
-                image_url = img_el.get("data-src") or img_el.get("src") or ""
-            else:
-                image_url = ""
+    # Collect ALL images from the detail page
+    images: list[str] = []
+    for img in soup.select(
+        ".slick-slide img, .gallery img, [class*='gallery'] img, "
+        "[class*='slider'] img, .postImages img, .post-images img, img[data-src], img[src]"
+    ):
+        src = img.get("data-src") or img.get("data-original") or img.get("src") or ""
+        if src and src.startswith("http") and src not in images:
+            # skip tiny icons/avatars
+            if not any(x in src for x in ["placeholder", "avatar", "icon", "logo", "1x1"]):
+                images.append(src)
 
-            if title or url:
-                listings.append(
-                    Listing(
-                        title=title,
-                        price=price,
-                        location=location,
-                        date_posted=date_posted,
-                        url=url,
-                        image_url=image_url,
-                        listing_id=listing_id,
-                    )
-                )
-        except Exception as e:
-            print(f"[warn] Failed to parse card: {e}")
+    return Listing(
+        listing_id=listing_id,
+        title=title,
+        price=price,
+        description=description,
+        location=location,
+        date_posted=date_posted,
+        condition=condition,
+        seller_name=seller_name,
+        url=url,
+        images=images,
+    )
+
+
+async def scrape_detail_page(page: Page, url: str, referer: str) -> Optional[Listing]:
+    """Visit one listing page and return a Listing, or None on failure."""
+    try:
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=30000,
+            referer=referer,
+        )
+        await jitter_sleep(random.uniform(1.5, 3.0), 0.5)
+        await human_mouse_wander(page)
+        await human_scroll(page)
+        await jitter_sleep(random.uniform(0.5, 1.5), 0.3)
+
+        html = await page.content()
+        listing = parse_detail(html, url)
+        return listing
+    except Exception as e:
+        print(f"  [error] {url}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Image downloading
+# ---------------------------------------------------------------------------
+
+def _safe_name(s: str) -> str:
+    return re.sub(r"[^\w-]", "_", s)
+
+
+async def download_listing_images(
+    listing: Listing,
+    images_root: Path,
+    session: aiohttp.ClientSession,
+    sem: asyncio.Semaphore,
+) -> None:
+    """Download all images for one listing into images/<listing_id>/."""
+    if not listing.images:
+        return
+    folder = images_root / (listing.listing_id or _safe_name(listing.url[-20:]))
+    folder.mkdir(parents=True, exist_ok=True)
+
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Referer": "https://iq.opensooq.com/",
+    }
+
+    for idx, img_url in enumerate(listing.images):
+        ext = Path(urlparse(img_url).path).suffix or ".jpg"
+        ext = re.sub(r"[^a-zA-Z0-9.]", "", ext)[:5]
+        dest = folder / f"{idx:03d}{ext}"
+        if dest.exists():
+            listing.local_images.append(str(dest))
             continue
-
-    return listings
-
-
-async def get_page_html(page: Page, url: str) -> str:
-    """Navigate to URL and return the fully rendered HTML."""
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await random_delay(1000, 2000)
-
-    # Scroll down to trigger lazy-loading
-    await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-    await random_delay(500, 1000)
-    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    await random_delay(500, 1000)
-
-    return await page.content()
+        async with sem:
+            try:
+                async with session.get(
+                    img_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25)
+                ) as resp:
+                    if resp.status == 200:
+                        dest.write_bytes(await resp.read())
+                        listing.local_images.append(str(dest))
+                    else:
+                        print(f"    [warn] Image HTTP {resp.status}: {img_url}")
+            except Exception as e:
+                print(f"    [warn] Image download failed: {e}")
 
 
-async def get_total_pages(page: Page, html: str) -> int:
-    """Detect total number of pages from pagination."""
-    soup = BeautifulSoup(html, "lxml")
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
 
-    # Try common pagination patterns
-    pag = soup.select("ul.pagination li a") or soup.select(".pager a") or soup.select("[class*='page'] a")
-
-    page_numbers = []
-    for a in pag:
-        text = a.get_text(strip=True)
-        if text.isdigit():
-            page_numbers.append(int(text))
-
-    if page_numbers:
-        return max(page_numbers)
-
-    # Try data attribute
-    last_page_el = soup.select_one("[data-last-page]")
-    if last_page_el:
-        try:
-            return int(last_page_el["data-last-page"])
-        except (ValueError, KeyError):
-            pass
-
-    return 1  # fallback: single page
+def listing_to_row(l: Listing) -> dict:
+    d = asdict(l) if hasattr(l, "__dataclass_fields__") else l.__dict__.copy()
+    d["images"] = " | ".join(l.images)
+    d["local_images"] = " | ".join(l.local_images)
+    return d
 
 
-def build_page_url(base: str, page_num: int) -> str:
-    """Build paginated URL."""
-    if page_num <= 1:
-        return base
-    # OpenSooq uses ?page=N pattern
-    return f"{base}?page={page_num}"
+def asdict(l: Listing) -> dict:
+    return {f.name: getattr(l, f.name) for f in dc_fields(l)}
 
 
 def save_csv(listings: list[Listing], path: Path) -> None:
-    fieldnames = [f.name for f in fields(Listing)]
+    if not listings:
+        return
+    row_keys = list(asdict(listings[0]).keys())
+    row_keys[row_keys.index("images")] = "images"
+    row_keys[row_keys.index("local_images")] = "local_images"
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=row_keys)
         writer.writeheader()
-        writer.writerows([asdict(l) for l in listings])
-    print(f"Saved {len(listings)} listings to {path}")
+        for l in listings:
+            row = asdict(l)
+            row["images"] = " | ".join(l.images)
+            row["local_images"] = " | ".join(l.local_images)
+            writer.writerow(row)
+    print(f"Saved {len(listings)} listings → {path}")
 
 
 def save_json(listings: list[Listing], path: Path) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump([asdict(l) for l in listings], f, ensure_ascii=False, indent=2)
-    print(f"Saved {len(listings)} listings to {path}")
+    print(f"Saved {len(listings)} listings → {path}")
 
+
+def load_state(state_file: Path) -> set[str]:
+    """Return set of already-scraped URLs."""
+    if not state_file.exists():
+        return set()
+    try:
+        return set(json.loads(state_file.read_text()))
+    except Exception:
+        return set()
+
+
+def save_state(done: set[str], state_file: Path) -> None:
+    state_file.write_text(json.dumps(list(done)))
+
+
+# ---------------------------------------------------------------------------
+# Main scrape orchestration
+# ---------------------------------------------------------------------------
 
 async def scrape(
     max_pages: int = 5,
     output_csv: Optional[str] = "listings.csv",
     output_json: Optional[str] = "listings.json",
     images_dir: Optional[str] = "images",
-    headless: bool = True,
+    delay_between: float = 4.0,
+    resume: bool = True,
 ) -> list[Listing]:
+
+    state_file = Path(".scrape_state.json")
+    done_urls: set[str] = load_state(state_file) if resume else set()
+    if done_urls:
+        print(f"[resume] Skipping {len(done_urls)} already-scraped listings.")
+
+    ua = random.choice(USER_AGENTS)
+    vp = random.choice(VIEWPORTS)
+
     all_listings: list[Listing] = []
+    img_sem = asyncio.Semaphore(6)  # max concurrent image downloads
 
     async with async_playwright() as pw:
-        browser, context = await setup_browser(pw)
+        browser, context = await new_context(pw, ua, vp)
         page = await context.new_page()
 
-        print(f"Fetching page 1: {BASE_URL}")
-        html = await get_page_html(page, BASE_URL)
+        # ---- Phase 1: collect URLs ----------------------------------------
+        listing_urls = await collect_listing_urls(page, max_pages)
+        pending = [u for u in listing_urls if u not in done_urls]
+        print(f"[Phase 2] Scraping {len(pending)} listing detail pages ...")
 
-        page1_listings = parse_listings(html)
-        all_listings.extend(page1_listings)
-        print(f"Page 1: found {len(page1_listings)} listings")
+        # ---- Phase 2: scrape each listing one at a time --------------------
+        async with aiohttp.ClientSession() as http_session:
+            for i, url in enumerate(tqdm(pending, desc="Listings")):
+                # Rotate UA/viewport every ~15 listings to vary fingerprint
+                if i > 0 and i % 15 == 0:
+                    await browser.close()
+                    ua = random.choice(USER_AGENTS)
+                    vp = random.choice(VIEWPORTS)
+                    browser, context = await new_context(pw, ua, vp)
+                    page = await context.new_page()
+                    print(f"  [stealth] Rotated browser profile at listing {i}")
 
-        total_pages = await get_total_pages(page, html)
-        pages_to_scrape = min(total_pages, max_pages)
-        print(f"Total pages detected: {total_pages} | Will scrape: {pages_to_scrape}")
+                referer = BASE_URL if i == 0 else (all_listings[-1].url if all_listings else BASE_URL)
+                listing = await scrape_detail_page(page, url, referer)
 
-        for p in tqdm(range(2, pages_to_scrape + 1), desc="Scraping pages"):
-            url = build_page_url(BASE_URL, p)
-            try:
-                html = await get_page_html(page, url)
-                page_listings = parse_listings(html)
-                all_listings.extend(page_listings)
-                print(f"Page {p}: found {len(page_listings)} listings")
-            except Exception as e:
-                print(f"[error] Page {p} failed: {e}")
-                break
-            await random_delay(1000, 3000)
+                if listing:
+                    # Download images immediately after scraping this listing
+                    if images_dir:
+                        await download_listing_images(
+                            listing, Path(images_dir), http_session, img_sem
+                        )
+                    all_listings.append(listing)
+                    done_urls.add(url)
+                    save_state(done_urls, state_file)
+
+                # Occasional longer pause (~every 20 listings) to avoid rate limits
+                if (i + 1) % 20 == 0:
+                    pause = random.uniform(15, 30)
+                    print(f"  [cool-down] Pausing {pause:.0f}s after {i+1} listings ...")
+                    await asyncio.sleep(pause)
+                else:
+                    await jitter_sleep(delay_between, delay_between * 0.4)
 
         await browser.close()
 
-    # Deduplicate by listing_id (keep first occurrence)
-    seen = set()
-    unique = []
-    for l in all_listings:
-        key = l.listing_id or l.url
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(l)
-        elif not key:
-            unique.append(l)
-
-    print(f"\nTotal unique listings scraped: {len(unique)}")
-
-    if images_dir:
-        await download_images(unique, Path(images_dir))
+    print(f"\nDone. {len(all_listings)} listings scraped.")
 
     if output_csv:
-        save_csv(unique, Path(output_csv))
+        save_csv(all_listings, Path(output_csv))
     if output_json:
-        save_json(unique, Path(output_json))
+        save_json(all_listings, Path(output_json))
 
-    return unique
+    # Clean up state file on full success
+    if not pending or len(all_listings) == len(pending):
+        state_file.unlink(missing_ok=True)
 
+    return all_listings
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scrape OpenSooq IQ mobile & tablet listings"
+        description="Scrape OpenSooq IQ mobile & tablet listings (one by one, stealth mode)"
     )
-    parser.add_argument(
-        "--pages", type=int, default=5,
-        help="Maximum number of pages to scrape (default: 5)"
-    )
-    parser.add_argument(
-        "--csv", type=str, default="listings.csv",
-        help="Output CSV file path (default: listings.csv)"
-    )
-    parser.add_argument(
-        "--json", type=str, default="listings.json",
-        help="Output JSON file path (default: listings.json)"
-    )
-    parser.add_argument(
-        "--no-csv", action="store_true",
-        help="Disable CSV output"
-    )
-    parser.add_argument(
-        "--no-json", action="store_true",
-        help="Disable JSON output"
-    )
-    parser.add_argument(
-        "--images-dir", type=str, default="images",
-        help="Directory to save downloaded images (default: images/)"
-    )
-    parser.add_argument(
-        "--no-images", action="store_true",
-        help="Disable image downloading"
-    )
+    parser.add_argument("--pages", type=int, default=5,
+                        help="Index pages to scan for URLs (default: 5)")
+    parser.add_argument("--csv", type=str, default="listings.csv")
+    parser.add_argument("--json", type=str, default="listings.json")
+    parser.add_argument("--no-csv", action="store_true")
+    parser.add_argument("--no-json", action="store_true")
+    parser.add_argument("--images-dir", type=str, default="images",
+                        help="Directory for downloaded images (default: images/)")
+    parser.add_argument("--no-images", action="store_true")
+    parser.add_argument("--delay", type=float, default=4.0,
+                        help="Base seconds between listing requests (default: 4.0)")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="Ignore previous progress and start fresh")
     args = parser.parse_args()
 
     asyncio.run(
@@ -389,6 +627,8 @@ def main():
             output_csv=None if args.no_csv else args.csv,
             output_json=None if args.no_json else args.json,
             images_dir=None if args.no_images else args.images_dir,
+            delay_between=args.delay,
+            resume=not args.no_resume,
         )
     )
 
