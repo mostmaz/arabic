@@ -7,15 +7,20 @@ import asyncio
 import csv
 import json
 import random
-import time
+import re
 import argparse
 from pathlib import Path
 from dataclasses import dataclass, asdict, fields
 from typing import Optional
+from urllib.parse import urlparse
 
+import aiohttp
 from playwright.async_api import async_playwright, Page, BrowserContext
 from bs4 import BeautifulSoup
 from tqdm import tqdm
+
+
+IMAGE_DIR = Path("images")
 
 
 BASE_URL = "https://iq.opensooq.com/ar/%D9%85%D9%88%D8%A8%D8%A7%D9%8A%D9%84-%D8%AA%D8%A7%D8%A8%D9%84%D8%AA"
@@ -30,11 +35,65 @@ class Listing:
     url: str
     image_url: str
     listing_id: str
+    local_image: str = ""  # path to downloaded image on disk
 
 
 async def random_delay(min_ms: int = 800, max_ms: int = 2500) -> None:
     """Sleep a random amount to mimic human browsing."""
     await asyncio.sleep(random.uniform(min_ms / 1000, max_ms / 1000))
+
+
+def _image_filename(listing_id: str, image_url: str) -> str:
+    """Derive a safe local filename from listing_id + original extension."""
+    ext = Path(urlparse(image_url).path).suffix or ".jpg"
+    ext = re.sub(r"[^a-zA-Z0-9.]", "", ext)[:5]  # sanitise
+    safe_id = re.sub(r"[^\w-]", "_", listing_id) if listing_id else "unknown"
+    return f"{safe_id}{ext}"
+
+
+async def download_images(
+    listings: list["Listing"],
+    images_dir: Path,
+    concurrency: int = 8,
+) -> None:
+    """Download listing images concurrently; skips already-downloaded files."""
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    sem = asyncio.Semaphore(concurrency)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://iq.opensooq.com/",
+    }
+
+    async def fetch_one(session: aiohttp.ClientSession, listing: "Listing") -> None:
+        if not listing.image_url:
+            return
+        filename = _image_filename(listing.listing_id, listing.image_url)
+        dest = images_dir / filename
+        if dest.exists():
+            listing.local_image = str(dest)
+            return
+        async with sem:
+            try:
+                async with session.get(
+                    listing.image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+                ) as resp:
+                    if resp.status == 200:
+                        dest.write_bytes(await resp.read())
+                        listing.local_image = str(dest)
+                    else:
+                        print(f"[warn] Image {resp.status}: {listing.image_url}")
+            except Exception as e:
+                print(f"[warn] Failed to download image for {listing.listing_id}: {e}")
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_one(session, l) for l in listings if l.image_url]
+        for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Downloading images"):
+            await coro
 
 
 async def setup_browser(playwright) -> tuple:
@@ -232,6 +291,7 @@ async def scrape(
     max_pages: int = 5,
     output_csv: Optional[str] = "listings.csv",
     output_json: Optional[str] = "listings.json",
+    images_dir: Optional[str] = "images",
     headless: bool = True,
 ) -> list[Listing]:
     all_listings: list[Listing] = []
@@ -278,6 +338,9 @@ async def scrape(
 
     print(f"\nTotal unique listings scraped: {len(unique)}")
 
+    if images_dir:
+        await download_images(unique, Path(images_dir))
+
     if output_csv:
         save_csv(unique, Path(output_csv))
     if output_json:
@@ -310,6 +373,14 @@ def main():
         "--no-json", action="store_true",
         help="Disable JSON output"
     )
+    parser.add_argument(
+        "--images-dir", type=str, default="images",
+        help="Directory to save downloaded images (default: images/)"
+    )
+    parser.add_argument(
+        "--no-images", action="store_true",
+        help="Disable image downloading"
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -317,6 +388,7 @@ def main():
             max_pages=args.pages,
             output_csv=None if args.no_csv else args.csv,
             output_json=None if args.no_json else args.json,
+            images_dir=None if args.no_images else args.images_dir,
         )
     )
 

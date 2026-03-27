@@ -11,6 +11,7 @@ env/
 # Output files
 listings.csv
 listings.json
+images/
 
 # Playwright
 /playwright-report/
