@@ -554,9 +554,14 @@ def extract_listing_urls(html: str) -> list[str]:
     urls = []
     for a in soup.select("a[href]"):
         href = a["href"]
-        if re.search(r"/ar/.+/\d+", href) or re.search(r"post/\d+", href):
+        # Match OpenSooq listing URL patterns:
+        # /ar/<category>/<title>-<id>  or  /post/<id>  or  any path ending in a long numeric id
+        if (re.search(r"/ar/[^/]+/[^/]+-\d{5,}", href)
+                or re.search(r"/post/\d+", href)
+                or re.search(r"/\d{7,}(?:[/?#]|$)", href)):
             full = href if href.startswith("http") else f"https://iq.opensooq.com{href}"
-            if full not in urls:
+            # Exclude pagination / category-only links
+            if full not in urls and not re.search(r"[?&]page=", full):
                 urls.append(full)
     return urls
 
@@ -659,13 +664,31 @@ async def scrape_page(
             else:
                 # ── Category / index page ────────────────────────────────────
                 progress(message="Fetching index page...")
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await jitter_sleep(2.0, 0.5)
+                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                # Wait for JS to inject listing cards; try known card selectors
+                for card_sel in (
+                    "a[href*='/ar/']",
+                    "[class*='post'] a",
+                    "[class*='listing'] a",
+                    "[class*='card'] a",
+                    "li a[href]",
+                ):
+                    try:
+                        await page.wait_for_selector(card_sel, timeout=8000)
+                        break
+                    except Exception:
+                        pass
+                await jitter_sleep(2.5, 0.5)
                 await human_scroll(page)
+                # Re-evaluate scroll height after lazy-loaded cards appear
+                await jitter_sleep(1.5, 0.3)
                 html = await page.content()
 
                 listing_urls = extract_listing_urls(html)
                 total = len(listing_urls)
+                print(f"  [index] found {total} listing URLs on {url}")
+                for u in listing_urls[:5]:
+                    print(f"    {u}")
                 progress(total=total, message=f"Found {total} listings on page")
 
                 scraped_urls = {l.get("url") for l in load_listings()}
