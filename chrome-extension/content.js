@@ -16,17 +16,56 @@ function getText(...selectors) {
   return "";
 }
 
-function extractListing() {
+function getTelNumber() {
+  const a = document.querySelector("a[href^='tel:']");
+  if (!a) return "";
+  return a.getAttribute("href").replace("tel:", "").replace(/\s/g, "").trim();
+}
+
+async function revealPhone() {
+  // If already visible, return immediately
+  const existing = getTelNumber();
+  if (existing) return existing;
+
+  // Selectors for the show-phone button
+  const btnSelectors = [
+    "[class*='showPhone']",
+    "[class*='show-phone']",
+    "[class*='ShowPhone']",
+    "button[class*='phone']",
+    "button[class*='Phone']",
+    "[data-action*='phone']",
+    "[data-testid*='phone']",
+    "button[class*='call']",
+  ];
+
+  let btn = null;
+  for (const sel of btnSelectors) {
+    btn = document.querySelector(sel);
+    if (btn) break;
+  }
+
+  if (!btn) return "";
+
+  btn.click();
+
+  // Wait up to 5s for a tel: link to appear
+  for (let i = 0; i < 50; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    const num = getTelNumber();
+    if (num) return num;
+  }
+
+  return "";
+}
+
+async function extractListing() {
   // Listing ID from URL
   const idMatch = location.pathname.match(/\/(\d{6,})/);
   const listing_id = idMatch ? idMatch[1] : "";
 
-  // Phone — already visible when logged in
-  let phone = "";
-  const telLink = document.querySelector("a[href^='tel:']");
-  if (telLink) {
-    phone = telLink.getAttribute("href").replace("tel:", "").trim();
-  }
+  // Reveal and get phone number
+  const phone = await revealPhone();
 
   // Images — grab from gallery/slider elements
   const images = [];
@@ -91,13 +130,13 @@ function extractCategoryUrls() {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "detect") {
     if (isListingPage()) {
-      sendResponse({ type: "listing", data: extractListing() });
+      extractListing().then(data => sendResponse({ type: "listing", data }));
     } else {
       const urls = extractCategoryUrls();
       sendResponse({ type: "category", urls });
     }
   } else if (msg.action === "extract") {
-    sendResponse({ data: extractListing() });
+    extractListing().then(data => sendResponse({ data }));
   }
-  return true;
+  return true; // keep channel open for async response
 });
