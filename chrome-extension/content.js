@@ -73,30 +73,35 @@ async function extractListing() {
 
   const phone = await revealPhone();
 
-  // ── Images: scope to gallery container using hero image ──────────────────────
+  // ── Images: from the listing gallery section only ────────────────────────────
   const images = [];
-  const seen = new Set();
+  const seenHash = new Set();
 
-  const heroImg = document.querySelector("img[fetchpriority='high'][src*='os-cdn.com']")
-               || document.querySelector("img[fetchpriority='high']");
+  // Target the exact gallery section OpenSooq uses
+  const gallerySection = document.getElementById("listingViewGalleryModalDesktop")
+                      || document.querySelector("[id*='Gallery']")
+                      || document.querySelector("[class*='mainSlider']");
 
-  let galleryEl = null;
-  if (heroImg) {
-    let el = heroImg.parentElement;
-    while (el && el !== document.body) {
-      const count = el.querySelectorAll("img[src*='os-cdn.com']").length;
-      if (count >= 2) { galleryEl = el; break; }
-      el = el.parentElement;
+  const imgScope = gallerySection || document.body;
+
+  imgScope.querySelectorAll("img[src*='os-cdn.com']").forEach(img => {
+    // Prefer the highest-res from srcset (2000w), fallback to src
+    let src = img.src || "";
+    if (img.srcset) {
+      const parts = img.srcset.split(",").map(s => s.trim());
+      const best = parts.find(s => s.includes("2000w")) || parts[parts.length - 1];
+      if (best) src = best.split(" ")[0].trim();
     }
-  }
 
-  const scope = galleryEl || document.body;
-  scope.querySelectorAll("img[src*='os-cdn.com']").forEach(img => {
-    const src = img.src || "";
-    if (src && !seen.has(src) && !src.includes("avatar") && !src.includes("placeholder")) {
-      seen.add(src);
-      images.push(src);
-    }
+    if (!src || src.includes("0x240") || src.includes("avatar") || src.includes("placeholder")) return;
+
+    // Deduplicate by the image hash (last path segments, ignoring size prefix)
+    const hashMatch = src.match(/previews\/[^/]+\/(.+)/);
+    const hash = hashMatch ? hashMatch[1] : src;
+    if (seenHash.has(hash)) return;
+
+    seenHash.add(hash);
+    images.push(src);
   });
 
   // ── Price ─────────────────────────────────────────────────────────────────────
