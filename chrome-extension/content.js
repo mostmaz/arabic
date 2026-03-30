@@ -91,23 +91,32 @@ async function extractListing() {
   // Reveal and get phone number
   const phone = await revealPhone();
 
-  // ── Images: only OpenSooq CDN images (os-cdn.com) ──────────────────────────
+  // ── Images: only from the main listing gallery ─────────────────────────────
   const images = [];
   const seen = new Set();
 
-  document.querySelectorAll("img").forEach(img => {
-    const src = img.dataset.src || img.dataset.original || img.src || "";
-    if (
-      src.includes("os-cdn.com") &&
-      !seen.has(src) &&
-      !src.includes("avatar") &&
-      !src.includes("placeholder")
-    ) {
+  // The hero image has fetchpriority="high" — use it to locate the gallery container
+  const heroImg = document.querySelector("img[fetchpriority='high'][src*='os-cdn.com']")
+                || document.querySelector("img[fetchpriority='high']");
+
+  let galleryEl = null;
+  if (heroImg) {
+    // Walk up until we find a container holding 2+ os-cdn images (the gallery)
+    let el = heroImg.parentElement;
+    while (el && el !== document.body) {
+      const count = el.querySelectorAll("img[src*='os-cdn.com']").length;
+      if (count >= 2) { galleryEl = el; break; }
+      el = el.parentElement;
+    }
+  }
+
+  // Scope to gallery, or fall back to only the first half of the DOM
+  const scope = galleryEl || document.body;
+  scope.querySelectorAll("img[src*='os-cdn.com']").forEach(img => {
+    const src = img.src || "";
+    if (src && !seen.has(src) && !src.includes("avatar") && !src.includes("placeholder")) {
       seen.add(src);
       images.push(src);
-    }
-  });
-
   // ── Price ───────────────────────────────────────────────────────────────────
   // Find the first element whose text looks like a price number (e.g. "1,250,000")
   let price = "";
