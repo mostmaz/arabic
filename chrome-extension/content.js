@@ -91,48 +91,17 @@ async function extractListing() {
   // Reveal and get phone number
   const phone = await revealPhone();
 
-  // ── Images: only from the main listing gallery ──────────────────────────────
-  // Strategy: find the gallery/media container at the TOP of the page,
-  // before any "related" or "recommended" sections.
+  // ── Images: only OpenSooq CDN images (os-cdn.com) ──────────────────────────
   const images = [];
   const seen = new Set();
 
-  // Find the first gallery-like container on the page
-  const galleryContainer = (
-    document.querySelector("[class*='PostGallery']") ||
-    document.querySelector("[class*='postGallery']") ||
-    document.querySelector("[class*='gallery_']") ||
-    document.querySelector("[class*='ImageGallery']") ||
-    document.querySelector("[class*='imageGallery']") ||
-    document.querySelector("[class*='MediaGallery']") ||
-    document.querySelector("[class*='slider_']") ||
-    document.querySelector("[class*='Slider_']") ||
-    document.querySelector(".slick-slider") ||
-    document.querySelector("[class*='swiper']") ||
-    // fallback: the first large image container
-    document.querySelector("main, article, [class*='post-detail'], [class*='PostDetail'], [class*='listing-detail']")
-  );
-
-  const imgScope = galleryContainer || document.body;
-
-  // Only grab images from the gallery scope, not the whole page
-  imgScope.querySelectorAll("img").forEach(img => {
-    // Skip images that are inside "related", "recommended", "similar" sections
-    const parent = img.closest(
-      "[class*='related'], [class*='Related'], [class*='recommend'], " +
-      "[class*='Recommend'], [class*='similar'], [class*='Similar'], " +
-      "[class*='suggested'], [class*='Suggested'], [class*='more-listing'], " +
-      "[class*='other-listing'], [class*='ads'], [class*='banner']"
-    );
-    if (parent) return;
-
+  document.querySelectorAll("img").forEach(img => {
     const src = img.dataset.src || img.dataset.original || img.src || "";
     if (
-      src && src.startsWith("http") && !seen.has(src) &&
-      !src.includes("placeholder") && !src.includes("avatar") &&
-      !src.includes("000.svg") && !src.includes("logo") && !src.includes("icon") &&
-      // OpenSooq listing photos are usually from their CDN and have a listing ID in the URL
-      (src.includes("opensooq") || src.includes("cdnp") || src.match(/\.(jpg|jpeg|png|webp)/i))
+      src.includes("os-cdn.com") &&
+      !seen.has(src) &&
+      !src.includes("avatar") &&
+      !src.includes("placeholder")
     ) {
       seen.add(src);
       images.push(src);
@@ -140,23 +109,18 @@ async function extractListing() {
   });
 
   // ── Price ───────────────────────────────────────────────────────────────────
-  // Look for price inside the listing detail area only, not related listings
-  const detailArea = document.querySelector(
-    "main, article, [class*='post-detail'], [class*='PostDetail'], " +
-    "[class*='listing-detail'], [class*='ListingDetail'], [class*='postPage']"
-  ) || document.body;
-
-  const priceEl = (
-    detailArea.querySelector("[class*='price_price']") ||
-    detailArea.querySelector("[class*='Price_price']") ||
-    detailArea.querySelector("[class*='postPrice']") ||
-    detailArea.querySelector("[class*='PostPrice']") ||
-    detailArea.querySelector("[class*='listing-price']") ||
-    detailArea.querySelector("h2[class*='price'], h3[class*='price'], span[class*='price']")
-  );
-  const price = priceEl ? priceEl.innerText.trim() : getText(
-    "[class*='price']", "[class*='Price']", "[data-testid*='price']"
-  );
+  // Find the first element whose text looks like a price number (e.g. "1,250,000")
+  let price = "";
+  const allEls = document.querySelectorAll("span, div, h1, h2, h3, p, strong, b");
+  for (const el of allEls) {
+    const t = (el.innerText || el.textContent || "").trim();
+    // Price pattern: digits with commas/dots, optionally followed by currency
+    if (/^\d[\d,.\s]{1,12}(IQD|دينار|USD|\$)?$/.test(t) && t.replace(/\D/g, "").length >= 3) {
+      price = t;
+      break;
+    }
+  }
+  if (!price) price = getText("[class*='price']", "[class*='Price']", "[data-testid*='price']");
 
   return {
     listing_id,
