@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      width: 300px;
+      background: #f8f9fa;
+      color: #1a1a2e;
+    }
+
+    .header {
+      background: #4f46e5;
+      color: #fff;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header-title { font-size: 15px; font-weight: 700; }
+    .header-sub { font-size: 11px; opacity: .75; margin-top: 1px; }
+
+    .section { padding: 14px 16px; border-bottom: 1px solid #e5e7eb; background: #fff; }
+
+    .page-type {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 20px;
+      margin-bottom: 10px;
+    }
+    .page-type.listing  { background: #dcfce7; color: #16a34a; }
+    .page-type.category { background: #dbeafe; color: #1d4ed8; }
+    .page-type.other    { background: #f3f4f6; color: #6b7280; }
+
+    .info-row { font-size: 13px; color: #4b5563; margin-top: 4px; }
+    .info-row strong { color: #111; }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .88; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-primary { background: #4f46e5; color: #fff; }
+    .btn-danger  { background: #dc2626; color: #fff; }
+    .btn-ghost   { background: #f3f4f6; color: #374151; margin-top: 6px; }
+
+    .progress-wrap {
+      margin-top: 10px;
+      background: #e5e7eb;
+      border-radius: 99px;
+      height: 6px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: #4f46e5;
+      border-radius: 99px;
+      transition: width .3s;
+    }
+
+    .status-text {
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 6px;
+      min-height: 16px;
+    }
+
+    .stats-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .stat {
+      flex: 1;
+      text-align: center;
+      background: #f3f4f6;
+      border-radius: 8px;
+      padding: 6px 4px;
+    }
+    .stat-num  { font-size: 16px; font-weight: 700; color: #111; }
+    .stat-lbl  { font-size: 10px; color: #6b7280; margin-top: 1px; }
+
+    .footer {
+      padding: 10px 16px;
+      text-align: center;
+    }
+    .footer a {
+      font-size: 12px;
+      color: #4f46e5;
+      text-decoration: none;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="header-title">🔍 OpenSooq Scraper</div>
+    <div class="header-sub">Logged in via browser session</div>
+  </div>
+</div>
+
+<!-- Page detection -->
+<div class="section" id="detectSection">
+  <div id="pageTypeBadge" class="page-type other">⏳ Detecting...</div>
+  <div class="info-row" id="infoText">Analysing current page...</div>
+
+  <!-- Single listing controls -->
+  <div id="listingControls" class="hidden">
+    <button class="btn btn-primary" id="scrapeOneBtn">⬇ Scrape This Listing</button>
+  </div>
+
+  <!-- Category controls -->
+  <div id="categoryControls" class="hidden">
+    <button class="btn btn-primary" id="scrapeAllBtn">⬇ Scrape All Listings</button>
+    <button class="btn btn-danger hidden" id="stopBtn">■ Stop</button>
+
+    <div class="progress-wrap hidden" id="progressWrap">
+      <div class="progress-bar" id="progressBar" style="width:0%"></div>
+    </div>
+    <div class="status-text" id="statusText"></div>
+
+    <div class="stats-row hidden" id="statsRow">
+      <div class="stat">
+        <div class="stat-num" id="statDone">0</div>
+        <div class="stat-lbl">Scraped</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="statSkipped">0</div>
+        <div class="stat-lbl">Skipped</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="statErrors">0</div>
+        <div class="stat-lbl">Errors</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="otherMsg" class="hidden">
+    <div class="info-row" style="color:#6b7280;margin-top:8px">
+      Navigate to an OpenSooq listing or category page to scrape.
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <a href="http://localhost:5000" target="_blank">Open Dashboard ↗</a>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

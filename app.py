@@ -24,10 +24,23 @@ from flask import Flask, render_template, jsonify, request, send_from_directory
 from scraper import (
     do_login, is_logged_in, load_cookies, save_cookies, import_browser_cookies,
     load_listings, read_state, write_state, scrape_page, purge_svg_images,
+    download_listing_images, Listing,
     COOKIES_FILE, LISTINGS_FILE, STATE_FILE,
 )
 
 app = Flask(__name__)
+
+# Allow Chrome extension (localhost) to call the API
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+@app.route("/api/<path:p>", methods=["OPTIONS"])
+def options_handler(p):
+    return "", 204
 
 # Suppress access log noise for frequent polling endpoints
 _SILENT_PATHS = {"/api/status", "/api/listings"}
@@ -162,6 +175,54 @@ def api_delete_listing(listing_id: str):
         return jsonify({"error": "Not found"}), 404
     LISTINGS_FILE.write_text(json.dumps(new_items, ensure_ascii=False, indent=2), encoding="utf-8")
     return jsonify({"status": "deleted"})
+
+
+@app.route("/api/listings/urls")
+def api_listing_urls():
+    """Return all already-scraped URLs so the extension can skip duplicates."""
+    urls = [l.get("url", "") for l in load_listings()]
+    return jsonify({"urls": urls})
+
+
+@app.route("/api/listings/import", methods=["POST"])
+def api_import_listing():
+    """Receive a listing dict from the Chrome extension and save it."""
+    body = request.get_json(silent=True)
+    if not body or not isinstance(body, dict):
+        return jsonify({"error": "invalid data"}), 400
+
+    listing = Listing(
+        listing_id=body.get("listing_id", ""),
+        title=body.get("title", ""),
+        price=body.get("price", ""),
+        description=body.get("description", ""),
+        location=body.get("location", ""),
+        date_posted=body.get("date_posted", ""),
+        condition=body.get("condition", ""),
+        seller_name=body.get("seller_name", ""),
+        phone=body.get("phone", ""),
+        url=body.get("url", ""),
+        images=body.get("images", []),
+        local_images=[],
+    )
+
+    # Download images in background thread
+    if listing.images:
+        def _dl():
+            import asyncio, aiohttp as _aiohttp
+            async def _run():
+                async with _aiohttp.ClientSession() as http:
+                    sem = asyncio.Semaphore(4)
+                    await download_listing_images(listing, IMAGES_DIR, http, sem)
+                    from scraper import save_listing as _save
+                    _save(listing)
+            asyncio.run(_run())
+        threading.Thread(target=_dl, daemon=True).start()
+    else:
+        from scraper import save_listing as _save
+        _save(listing)
+
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/listings/clear-phones", methods=["POST"])

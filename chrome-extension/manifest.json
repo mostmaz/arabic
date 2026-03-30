@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "OpenSooq Scraper",
+  "version": "1.0",
+  "description": "Scrape OpenSooq listings to your local dashboard",
+
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": [
+    "https://*.opensooq.com/*",
+    "http://localhost:5000/*"
+  ],
+
+  "action": {
+    "default_popup": "popup.html"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://*.opensooq.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  }
+}
