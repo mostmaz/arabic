@@ -17,9 +17,12 @@ function getText(...selectors) {
 }
 
 function getTelNumber() {
-  const a = document.querySelector("a[href^='tel:']");
-  if (!a) return "";
-  return a.getAttribute("href").replace("tel:", "").replace(/\s/g, "").trim();
+  // Try tel: href links first
+  for (const a of document.querySelectorAll("a[href^='tel:']")) {
+    const num = a.getAttribute("href").replace("tel:", "").replace(/\s/g, "").trim();
+    if (num.length >= 8) return num;
+  }
+  return "";
 }
 
 async function revealPhone() {
@@ -27,36 +30,51 @@ async function revealPhone() {
   const existing = getTelNumber();
   if (existing) return existing;
 
-  // Selectors for the show-phone button
-  const btnSelectors = [
-    "[class*='showPhone']",
-    "[class*='show-phone']",
-    "[class*='ShowPhone']",
-    "button[class*='phone']",
-    "button[class*='Phone']",
-    "[data-action*='phone']",
-    "[data-testid*='phone']",
-    "button[class*='call']",
-  ];
-
+  // Try every clickable element — find the one that looks like a phone button
+  // OpenSooq shows a partial number (e.g. "077166663XX") on the button itself
+  const allClickable = document.querySelectorAll("a, button, [role='button'], [onclick]");
   let btn = null;
-  for (const sel of btnSelectors) {
-    btn = document.querySelector(sel);
-    if (btn) break;
+
+  for (const el of allClickable) {
+    const cls = (el.className || "").toLowerCase();
+    const text = (el.innerText || el.textContent || "").trim();
+    const href = (el.getAttribute("href") || "").toLowerCase();
+    const dataType = (el.getAttribute("data-type") || "").toLowerCase();
+    const dataAction = (el.getAttribute("data-action") || "").toLowerCase();
+
+    // Match by class / attribute
+    if (
+      cls.includes("phone") || cls.includes("call") ||
+      cls.includes("contact") || cls.includes("showphone") ||
+      dataType.includes("phone") || dataAction.includes("phone") ||
+      href.includes("phone")
+    ) {
+      btn = el;
+      break;
+    }
+
+    // Match by text: contains partial phone pattern like "07716XXXXX" or "07X"
+    if (/07\d[\dX]{4,}/.test(text) || /\+964/.test(text)) {
+      btn = el;
+      break;
+    }
   }
 
   if (!btn) return "";
 
   btn.click();
 
-  // Wait up to 5s for a tel: link to appear
-  for (let i = 0; i < 50; i++) {
+  // Wait up to 6s for a full tel: link to appear
+  for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 100));
     const num = getTelNumber();
     if (num) return num;
   }
 
-  return "";
+  // Last resort: read the button text after click for a full number
+  const text = (btn.innerText || btn.textContent || "").replace(/\s/g, "");
+  const m = text.match(/07\d{8,9}/);
+  return m ? m[0] : "";
 }
 
 async function extractListing() {
