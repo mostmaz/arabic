@@ -42,6 +42,12 @@ async function revealPhone() {
     const dataType = (el.getAttribute("data-type") || "").toLowerCase();
     const dataAction = (el.getAttribute("data-action") || "").toLowerCase();
 
+    // Exact OpenSooq phone button class
+    if (el.className.includes("button_button__FPuHG") && el.className.includes("bg-primary")) {
+      btn = el;
+      break;
+    }
+
     // Match by class / attribute
     if (
       cls.includes("phone") || cls.includes("call") ||
