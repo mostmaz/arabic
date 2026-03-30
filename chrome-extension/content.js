@@ -73,46 +73,52 @@ async function extractListing() {
 
   const phone = await revealPhone();
 
-  // ── Images ───────────────────────────────────────────────────────────────────
+  // ── Images: extract from Next.js page data (most reliable) ──────────────────
   const images = [];
   const seenHash = new Set();
 
   function addImg(src) {
-    if (!src || src.includes(".mp4.") || src.includes("avatar") || src.includes("placeholder")) return;
+    if (!src || typeof src !== "string") return;
+    if (src.includes(".mp4") || src.includes("avatar") || src.includes("placeholder")) return;
     const hashMatch = src.match(/previews\/[^/]+\/(.+)/);
     const hash = hashMatch ? hashMatch[1] : src;
     if (seenHash.has(hash)) return;
     seenHash.add(hash);
-    images.push(src);
+    // Always use highest resolution
+    images.push(src.replace(/\/\d+x\d+\//, "/2000x0/"));
   }
 
-  // Strategy 1: gallery section thumbnail strip (0x240 → upscale to 2000x0)
-  const gallerySection =
-    document.getElementById("listingViewGalleryModalDesktop") ||
-    document.getElementById("listingViewGallery") ||
-    document.querySelector("[id*='GalleryModal']") ||
-    document.querySelector("[id*='gallery']");
+  // Strategy 1: __NEXT_DATA__ JSON embedded by Next.js — contains ALL images
+  try {
+    const nextData = document.getElementById("__NEXT_DATA__");
+    if (nextData) {
+      const json = JSON.parse(nextData.textContent);
+      const jsonStr = JSON.stringify(json);
+      // Extract all os-cdn.com image URLs from the JSON
+      const matches = jsonStr.match(/https:[^"]*os-cdn\.com[^"]*\.(?:jpg|jpeg|png|webp)[^"]*/g) || [];
+      matches.forEach(u => addImg(u.replace(/\\u002F/g, "/").replace(/\\/g, "")));
+    }
+  } catch (_) {}
 
-  if (gallerySection) {
-    gallerySection.querySelectorAll("img[src*='os-cdn.com'][src*='0x240']").forEach(img => {
-      addImg(img.src.replace("/0x240/", "/2000x0/"));
-    });
+  // Strategy 2: thumbnail strip (0x240 → upscale to 2000x0)
+  if (images.length === 0) {
+    const gallerySection =
+      document.getElementById("listingViewGalleryModalDesktop") ||
+      document.getElementById("listingViewGallery") ||
+      document.querySelector("[id*='Gallery']");
+    if (gallerySection) {
+      gallerySection.querySelectorAll("img[src*='os-cdn.com'][src*='0x240']").forEach(img => {
+        addImg(img.src.replace("/0x240/", "/2000x0/"));
+      });
+    }
   }
 
-  // Strategy 2: srcset — find all images with os-cdn srcsets (main slider)
+  // Strategy 3: srcset images
   if (images.length === 0) {
     document.querySelectorAll("img[srcset*='os-cdn.com']").forEach(img => {
       const parts = img.srcset.split(",").map(s => s.trim());
       const best = parts.find(s => s.includes("2000w")) || parts[parts.length - 1];
       if (best) addImg(best.split(" ")[0].trim());
-    });
-  }
-
-  // Strategy 3: any os-cdn image that isn't a thumbnail or avatar
-  if (images.length === 0) {
-    document.querySelectorAll("img[src*='os-cdn.com']").forEach(img => {
-      const src = img.src || "";
-      if (!src.includes("0x240") && !src.includes("0x84")) addImg(src);
     });
   }
 
