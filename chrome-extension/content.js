@@ -91,32 +91,78 @@ async function extractListing() {
   // Reveal and get phone number
   const phone = await revealPhone();
 
-  // Images — grab from gallery/slider elements
+  // ── Images: only from the main listing gallery ──────────────────────────────
+  // Strategy: find the gallery/media container at the TOP of the page,
+  // before any "related" or "recommended" sections.
   const images = [];
   const seen = new Set();
-  const imgCandidates = document.querySelectorAll(
-    ".slick-slide img, [class*='gallery'] img, [class*='slider'] img, " +
-    "[class*='swiper'] img, [class*='carousel'] img, " +
-    "img[data-src], img[data-original], img[src]"
+
+  // Find the first gallery-like container on the page
+  const galleryContainer = (
+    document.querySelector("[class*='PostGallery']") ||
+    document.querySelector("[class*='postGallery']") ||
+    document.querySelector("[class*='gallery_']") ||
+    document.querySelector("[class*='ImageGallery']") ||
+    document.querySelector("[class*='imageGallery']") ||
+    document.querySelector("[class*='MediaGallery']") ||
+    document.querySelector("[class*='slider_']") ||
+    document.querySelector("[class*='Slider_']") ||
+    document.querySelector(".slick-slider") ||
+    document.querySelector("[class*='swiper']") ||
+    // fallback: the first large image container
+    document.querySelector("main, article, [class*='post-detail'], [class*='PostDetail'], [class*='listing-detail']")
   );
-  imgCandidates.forEach(img => {
+
+  const imgScope = galleryContainer || document.body;
+
+  // Only grab images from the gallery scope, not the whole page
+  imgScope.querySelectorAll("img").forEach(img => {
+    // Skip images that are inside "related", "recommended", "similar" sections
+    const parent = img.closest(
+      "[class*='related'], [class*='Related'], [class*='recommend'], " +
+      "[class*='Recommend'], [class*='similar'], [class*='Similar'], " +
+      "[class*='suggested'], [class*='Suggested'], [class*='more-listing'], " +
+      "[class*='other-listing'], [class*='ads'], [class*='banner']"
+    );
+    if (parent) return;
+
     const src = img.dataset.src || img.dataset.original || img.src || "";
     if (
       src && src.startsWith("http") && !seen.has(src) &&
       !src.includes("placeholder") && !src.includes("avatar") &&
-      !src.includes("000.svg") && !src.includes("logo") &&
-      !src.includes("icon") && src.match(/\.(jpg|jpeg|png|webp)/i)
+      !src.includes("000.svg") && !src.includes("logo") && !src.includes("icon") &&
+      // OpenSooq listing photos are usually from their CDN and have a listing ID in the URL
+      (src.includes("opensooq") || src.includes("cdnp") || src.match(/\.(jpg|jpeg|png|webp)/i))
     ) {
       seen.add(src);
       images.push(src);
     }
   });
 
+  // ── Price ───────────────────────────────────────────────────────────────────
+  // Look for price inside the listing detail area only, not related listings
+  const detailArea = document.querySelector(
+    "main, article, [class*='post-detail'], [class*='PostDetail'], " +
+    "[class*='listing-detail'], [class*='ListingDetail'], [class*='postPage']"
+  ) || document.body;
+
+  const priceEl = (
+    detailArea.querySelector("[class*='price_price']") ||
+    detailArea.querySelector("[class*='Price_price']") ||
+    detailArea.querySelector("[class*='postPrice']") ||
+    detailArea.querySelector("[class*='PostPrice']") ||
+    detailArea.querySelector("[class*='listing-price']") ||
+    detailArea.querySelector("h2[class*='price'], h3[class*='price'], span[class*='price']")
+  );
+  const price = priceEl ? priceEl.innerText.trim() : getText(
+    "[class*='price']", "[class*='Price']", "[data-testid*='price']"
+  );
+
   return {
     listing_id,
     url: location.href,
     title: getText("h1", "[class*='post-title']", "[class*='PostTitle']", "[class*='listing-title']"),
-    price: getText("[class*='price']", "[class*='Price']", "[data-testid*='price']"),
+    price,
     description: getText("[class*='description']", "[class*='Description']", "[class*='post-body']", ".desc"),
     location: getText("[class*='location']", "[class*='Location']", "[class*='breadcrumb']", "[class*='area']"),
     date_posted: getText("[class*='date']", "[class*='Date']", "[class*='time']", "time"),
