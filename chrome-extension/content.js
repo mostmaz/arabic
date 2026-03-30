@@ -73,36 +73,29 @@ async function extractListing() {
 
   const phone = await revealPhone();
 
-  // ── Images: from the listing gallery section only ────────────────────────────
+  // ── Images: extract from gallery thumbnail strip then upscale to 2000x0 ──────
   const images = [];
   const seenHash = new Set();
 
-  // Target the exact gallery section OpenSooq uses
-  const gallerySection = document.getElementById("listingViewGalleryModalDesktop")
-                      || document.querySelector("[id*='Gallery']")
-                      || document.querySelector("[class*='mainSlider']");
+  // The thumbnail strip always has all images loaded (unlike the lazy main slider)
+  // Thumbnails use previews/0x240/ — we replace that with previews/2000x0/
+  const gallerySection = document.getElementById("listingViewGalleryModalDesktop");
 
-  const imgScope = gallerySection || document.body;
+  if (gallerySection) {
+    gallerySection.querySelectorAll("img[src*='os-cdn.com'][src*='0x240']").forEach(img => {
+      const src = img.src || "";
+      // Skip video preview thumbnails
+      if (src.includes(".mp4.") || src.includes("video")) return;
 
-  imgScope.querySelectorAll("img[src*='os-cdn.com']").forEach(img => {
-    // Prefer the highest-res from srcset (2000w), fallback to src
-    let src = img.src || "";
-    if (img.srcset) {
-      const parts = img.srcset.split(",").map(s => s.trim());
-      const best = parts.find(s => s.includes("2000w")) || parts[parts.length - 1];
-      if (best) src = best.split(" ")[0].trim();
-    }
-
-    if (!src || src.includes("0x240") || src.includes("avatar") || src.includes("placeholder")) return;
-
-    // Deduplicate by the image hash (last path segments, ignoring size prefix)
-    const hashMatch = src.match(/previews\/[^/]+\/(.+)/);
-    const hash = hashMatch ? hashMatch[1] : src;
-    if (seenHash.has(hash)) return;
-
-    seenHash.add(hash);
-    images.push(src);
-  });
+      // Upscale thumbnail URL to full resolution
+      const fullSrc = src.replace("/0x240/", "/2000x0/");
+      const hashMatch = fullSrc.match(/previews\/[^/]+\/(.+)/);
+      const hash = hashMatch ? hashMatch[1] : fullSrc;
+      if (seenHash.has(hash)) return;
+      seenHash.add(hash);
+      images.push(fullSrc);
+    });
+  }
 
   // ── Price ─────────────────────────────────────────────────────────────────────
   let price = "";
