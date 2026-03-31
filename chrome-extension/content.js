@@ -82,9 +82,11 @@ async function extractListing() {
 
   function addImg(src) {
     if (!src || typeof src !== "string") return;
+    // Only direct listing image URLs — skip proxied /_next/image and app assets
+    if (!src.startsWith("https://opensooq-images.os-cdn.com/previews/")) return;
     if (src.includes(".mp4") || src.includes("avatar") || src.includes("placeholder")) return;
     // Normalize to 2000x0 resolution
-    const normalized = src.replace(/\/\d+x\d+\//, "/2000x0/");
+    const normalized = src.replace(/\/previews\/[^/]+\//, "/previews/2000x0/");
     const hashMatch = normalized.match(/\/previews\/[^/]+\/(.+)/);
     const hash = hashMatch ? hashMatch[1] : normalized;
     if (seenHash.has(hash)) return;
