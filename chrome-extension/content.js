@@ -93,13 +93,20 @@ async function extractListing() {
     images.push(normalized);
   }
 
-  // Click first image to open the full-screen gallery modal
+  // Click first image to open the full-screen gallery modal.
+  // The image may be wrapped in an <a> tag — temporarily remove its href so
+  // the click fires the gallery handler without causing page navigation.
   const galleryTrigger = document.querySelector(
     "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
   );
   if (galleryTrigger) {
+    const anchor = galleryTrigger.closest("a");
+    const savedHref = anchor ? anchor.getAttribute("href") : null;
+    if (anchor) anchor.removeAttribute("href");
     galleryTrigger.click();
-    await new Promise(r => setTimeout(r, 900));
+    await new Promise(r => setTimeout(r, 200));
+    if (anchor && savedHref) anchor.setAttribute("href", savedHref);
+    await new Promise(r => setTimeout(r, 800));
   }
 
   // Locate the gallery modal that just opened — scope all collection to it so we
