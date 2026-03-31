@@ -93,15 +93,46 @@ async function extractListing() {
     images.push(normalized);
   }
 
-  function collectLoadedImages() {
-    document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => addImg(img.src));
+  // Click first image to open the full-screen gallery modal
+  const galleryTrigger = document.querySelector(
+    "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
+  );
+  if (galleryTrigger) {
+    galleryTrigger.click();
+    await new Promise(r => setTimeout(r, 900));
   }
 
-  // Read "N / M" slide counter from gallery UI → tells us total slide count
+  // Locate the gallery modal that just opened — scope all collection to it so we
+  // never pick up similar-listing thumbnails from the rest of the page
+  function findGalleryModal() {
+    const sels = [
+      "#listingViewGalleryModalDesktop", "#listingViewGalleryModal",
+      "[class*='GalleryModal']",  "[class*='gallery-modal']",
+      "[class*='ImageModal']",    "[class*='image-modal']",
+      "[class*='PhotoViewer']",   "[class*='photo-viewer']",
+      "[class*='LightBox']",      "[class*='lightbox']",
+    ];
+    for (const s of sels) {
+      const el = document.querySelector(s);
+      if (el && el.getBoundingClientRect().height > 0) return el;
+    }
+    return null;
+  }
+
+  const galleryModal = findGalleryModal();
+
+  // Collect only from gallery modal; fall back to full document if modal not found
+  function collectSlideImages() {
+    (galleryModal || document).querySelectorAll("img[src*='os-cdn.com/previews/']")
+      .forEach(img => addImg(img.src));
+  }
+
+  // Read "N / M" slide counter scoped to the gallery
   function getSlideTotal() {
-    for (const el of document.querySelectorAll("span, div, p, strong")) {
+    const root = galleryModal || document;
+    for (const el of root.querySelectorAll("span, div, p, strong")) {
       if (el.children.length > 0) continue;
-      const m = (el.textContent || "").trim().match(/^(\d+)\s*[\/]\s*(\d+)$/);
+      const m = (el.textContent || "").trim().match(/^(\d+)\s*\/\s*(\d+)$/);
       if (m) {
         const total = parseInt(m[2]);
         if (total >= 2 && total <= 50) return total;
@@ -110,57 +141,46 @@ async function extractListing() {
     return 0;
   }
 
-  // Collect images already loaded before opening gallery
-  collectLoadedImages();
-
-  // Click the first listing image to open the full gallery modal
-  const galleryTrigger = document.querySelector(
-    "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
-  );
-  if (galleryTrigger) {
-    galleryTrigger.click();
-    await new Promise(r => setTimeout(r, 800));
-  }
-
-  // Find the "next slide" button (never click <a> elements)
-  const nextBtn = (() => {
+  // Find next-slide button, preferring gallery scope
+  function findNextBtn() {
     const sels = [
       ".swiper-button-next", "[class*='swiper-button-next']",
       ".slick-next",         "[class*='slick-next']",
-      "button[aria-label='Next']", "button[aria-label='next']",
+      "button[aria-label='Next']",        "button[aria-label='next']",
       "button[aria-label*='Next slide']", "button[aria-label*='next slide']",
       "[class*='next-btn']:not(a)", "[class*='nextBtn']:not(a)",
-      "[class*='NextBtn']:not(a)", "[class*='arrow-right']:not(a)",
-      "[class*='arrowRight']:not(a)",
+      "[class*='arrow-right']:not(a)",    "[class*='arrowRight']:not(a)",
     ];
-    for (const s of sels) {
-      const el = document.querySelector(s);
-      if (el && el.tagName !== "A") return el;
+    for (const root of [galleryModal, document].filter(Boolean)) {
+      for (const s of sels) {
+        const el = root.querySelector(s);
+        if (el && el.tagName !== "A") return el;
+      }
     }
     return null;
-  })();
+  }
 
+  collectSlideImages(); // collect first/current slide
+
+  const nextBtn = findNextBtn();
   if (nextBtn) {
     const total = getSlideTotal();
-    // If we know total: click exactly (total - 1) times to visit every slide.
-    // If unknown: keep clicking until 3 consecutive clicks yield no new images (max 30).
     const maxClicks = total > 1 ? total - 1 : 30;
     let noNewStreak = 0;
 
     for (let i = 0; i < maxClicks; i++) {
       nextBtn.click();
-      await new Promise(r => setTimeout(r, 600)); // wait for lazy image to load
+      await new Promise(r => setTimeout(r, 600));
       const before = images.length;
-      collectLoadedImages();
+      collectSlideImages();
       if (images.length === before) {
         if (++noNewStreak >= 3 && total === 0) break;
       } else {
         noNewStreak = 0;
       }
     }
-    // Final collect after last slide settles
     await new Promise(r => setTimeout(r, 500));
-    collectLoadedImages();
+    collectSlideImages();
   }
 
   // Close gallery
