@@ -76,54 +76,54 @@ async function extractListing() {
 
   const phone = await revealPhone();
 
-  // ── Images: extract from Next.js page data (most reliable) ──────────────────
+  // ── Images ────────────────────────────────────────────────────────────────────
   const images = [];
   const seenHash = new Set();
 
   function addImg(src) {
     if (!src || typeof src !== "string") return;
-    // Only direct listing image URLs — skip proxied /_next/image and app assets
-    if (!src.startsWith("https://opensooq-images.os-cdn.com/previews/")) return;
+    if (!src.includes("opensooq-images.os-cdn.com/previews/")) return;
     if (src.includes(".mp4") || src.includes("avatar") || src.includes("placeholder")) return;
-    // Normalize to 2000x0 resolution
+    // Normalize to full-res 2000x0
     const normalized = src.replace(/\/previews\/[^/]+\//, "/previews/2000x0/");
+    // Dedup by filename (strip size prefix); treat .webp and .jpg.webp as same image
     const hashMatch = normalized.match(/\/previews\/[^/]+\/(.+)/);
-    const hash = hashMatch ? hashMatch[1] : normalized;
+    const hash = (hashMatch ? hashMatch[1] : normalized).replace(/^(.+?)\.jpg(\.webp)$/, "$1$2");
     if (seenHash.has(hash)) return;
     seenHash.add(hash);
     images.push(normalized);
   }
 
-  // Strategy 1: search raw __NEXT_DATA__ for opensooq-images.os-cdn.com/previews/ URLs
+  // Strategy 1: parse __NEXT_DATA__ as JSON and recursively walk every string value
+  // (avoids regex truncation on JSON-escaped slashes like \/previews\/0x240\/filename)
   try {
-    const nextData = document.getElementById("__NEXT_DATA__");
-    if (nextData) {
-      const raw = nextData.textContent;
-      // Match full image URLs including compound extensions like .jpg.webp
-      // Handles both escaped (\\/) and unescaped (/) slashes in JSON
-      const re = /https:\\?\/\\?\/opensooq-images\.os-cdn\.com\\?\/previews\\?\/[^"\\]+/g;
-      let m;
-      while ((m = re.exec(raw)) !== null) {
-        addImg(m[0].replace(/\\\//g, "/"));
-      }
+    const nextDataEl = document.getElementById("__NEXT_DATA__");
+    if (nextDataEl) {
+      const walk = v => {
+        if (typeof v === "string") { addImg(v); }
+        else if (Array.isArray(v)) { v.forEach(walk); }
+        else if (v && typeof v === "object") { Object.values(v).forEach(walk); }
+      };
+      walk(JSON.parse(nextDataEl.textContent));
     }
   } catch (_) {}
 
-  // Strategy 2: thumbnail strip (0x240 → upscale to 2000x0)
-  if (images.length === 0) {
-    document.querySelectorAll("img[src*='os-cdn.com'][src*='0x240']").forEach(img => {
-      addImg(img.src.replace("/0x240/", "/2000x0/"));
-    });
-  }
+  // Strategy 2: data-src on lazy-loaded gallery images not yet visible in DOM
+  document.querySelectorAll("img[data-src*='os-cdn.com']").forEach(img => {
+    addImg(img.getAttribute("data-src"));
+  });
 
-  // Strategy 3: srcset images
-  if (images.length === 0) {
-    document.querySelectorAll("img[srcset*='os-cdn.com']").forEach(img => {
-      const parts = img.srcset.split(",").map(s => s.trim());
-      const best = parts.find(s => s.includes("2000w")) || parts[parts.length - 1];
-      if (best) addImg(best.split(" ")[0].trim());
-    });
-  }
+  // Strategy 3: loaded img elements (catches anything not in __NEXT_DATA__)
+  document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => {
+    addImg(img.src);
+  });
+
+  // Strategy 4: srcset (2000w preferred, otherwise last/largest entry)
+  document.querySelectorAll("img[srcset*='os-cdn.com']").forEach(img => {
+    const parts = img.srcset.split(",").map(s => s.trim());
+    const best = parts.find(s => s.includes("2000w")) || parts[parts.length - 1];
+    if (best) addImg(best.split(" ")[0].trim());
+  });
 
   console.log("[OpenSooq Scraper] images found:", images.length, images);
 
