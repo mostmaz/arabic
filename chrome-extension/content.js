@@ -84,46 +84,88 @@ async function extractListing() {
     if (!src || typeof src !== "string") return;
     if (!src.includes("opensooq-images.os-cdn.com/previews/")) return;
     if (src.includes(".mp4") || src.includes("avatar") || src.includes("placeholder")) return;
-    // Normalize to full-res 2000x0
     const normalized = src.replace(/\/previews\/[^/]+\//, "/previews/2000x0/");
-    // Dedup by filename (strip size prefix); treat .webp and .jpg.webp as same image
     const hashMatch = normalized.match(/\/previews\/[^/]+\/(.+)/);
-    const hash = (hashMatch ? hashMatch[1] : normalized).replace(/^(.+?)\.jpg(\.webp)$/, "$1$2");
+    // Treat abc.webp and abc.jpg.webp as the same image for dedup
+    const hash = (hashMatch ? hashMatch[1] : normalized).replace(/\.jpg(\.webp)$/, "$1");
     if (seenHash.has(hash)) return;
     seenHash.add(hash);
     images.push(normalized);
   }
 
-  // Strategy 1: parse __NEXT_DATA__ as JSON and recursively walk every string value
-  // (avoids regex truncation on JSON-escaped slashes like \/previews\/0x240\/filename)
-  try {
-    const nextDataEl = document.getElementById("__NEXT_DATA__");
-    if (nextDataEl) {
-      const walk = v => {
-        if (typeof v === "string") { addImg(v); }
-        else if (Array.isArray(v)) { v.forEach(walk); }
-        else if (v && typeof v === "object") { Object.values(v).forEach(walk); }
-      };
-      walk(JSON.parse(nextDataEl.textContent));
+  function collectLoadedImages() {
+    document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => addImg(img.src));
+  }
+
+  // Read "N / M" slide counter from gallery UI → tells us total slide count
+  function getSlideTotal() {
+    for (const el of document.querySelectorAll("span, div, p, strong")) {
+      if (el.children.length > 0) continue;
+      const m = (el.textContent || "").trim().match(/^(\d+)\s*[\/]\s*(\d+)$/);
+      if (m) {
+        const total = parseInt(m[2]);
+        if (total >= 2 && total <= 50) return total;
+      }
     }
-  } catch (_) {}
+    return 0;
+  }
 
-  // Strategy 2: data-src on lazy-loaded gallery images not yet visible in DOM
-  document.querySelectorAll("img[data-src*='os-cdn.com']").forEach(img => {
-    addImg(img.getAttribute("data-src"));
-  });
+  // Collect images already loaded before opening gallery
+  collectLoadedImages();
 
-  // Strategy 3: loaded img elements (catches anything not in __NEXT_DATA__)
-  document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => {
-    addImg(img.src);
-  });
+  // Click the first listing image to open the full gallery modal
+  const galleryTrigger = document.querySelector(
+    "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
+  );
+  if (galleryTrigger) {
+    galleryTrigger.click();
+    await new Promise(r => setTimeout(r, 800));
+  }
 
-  // Strategy 4: srcset (2000w preferred, otherwise last/largest entry)
-  document.querySelectorAll("img[srcset*='os-cdn.com']").forEach(img => {
-    const parts = img.srcset.split(",").map(s => s.trim());
-    const best = parts.find(s => s.includes("2000w")) || parts[parts.length - 1];
-    if (best) addImg(best.split(" ")[0].trim());
-  });
+  // Find the "next slide" button (never click <a> elements)
+  const nextBtn = (() => {
+    const sels = [
+      ".swiper-button-next", "[class*='swiper-button-next']",
+      ".slick-next",         "[class*='slick-next']",
+      "button[aria-label='Next']", "button[aria-label='next']",
+      "button[aria-label*='Next slide']", "button[aria-label*='next slide']",
+      "[class*='next-btn']:not(a)", "[class*='nextBtn']:not(a)",
+      "[class*='NextBtn']:not(a)", "[class*='arrow-right']:not(a)",
+      "[class*='arrowRight']:not(a)",
+    ];
+    for (const s of sels) {
+      const el = document.querySelector(s);
+      if (el && el.tagName !== "A") return el;
+    }
+    return null;
+  })();
+
+  if (nextBtn) {
+    const total = getSlideTotal();
+    // If we know total: click exactly (total - 1) times to visit every slide.
+    // If unknown: keep clicking until 3 consecutive clicks yield no new images (max 30).
+    const maxClicks = total > 1 ? total - 1 : 30;
+    let noNewStreak = 0;
+
+    for (let i = 0; i < maxClicks; i++) {
+      nextBtn.click();
+      await new Promise(r => setTimeout(r, 600)); // wait for lazy image to load
+      const before = images.length;
+      collectLoadedImages();
+      if (images.length === before) {
+        if (++noNewStreak >= 3 && total === 0) break;
+      } else {
+        noNewStreak = 0;
+      }
+    }
+    // Final collect after last slide settles
+    await new Promise(r => setTimeout(r, 500));
+    collectLoadedImages();
+  }
+
+  // Close gallery
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }));
+  await new Promise(r => setTimeout(r, 300));
 
   console.log("[OpenSooq Scraper] images found:", images.length, images);
 
