@@ -93,19 +93,33 @@ async function extractListing() {
     images.push(normalized);
   }
 
-  // Click first image to open the full-screen gallery modal.
-  // The image may be wrapped in an <a> tag — temporarily remove its href so
-  // the click fires the gallery handler without causing page navigation.
+  // Open gallery: click first listing image.
+  // Two navigation-prevention layers are needed for Next.js <Link> components:
+  //   1. Remove the <a> href (blocks browser default navigation)
+  //   2. Stub router.push/replace (blocks Next.js client-side routing via onClick)
   const galleryTrigger = document.querySelector(
     "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
   );
   if (galleryTrigger) {
     const anchor = galleryTrigger.closest("a");
-    const savedHref = anchor ? anchor.getAttribute("href") : null;
+    const savedHref = anchor?.getAttribute("href") ?? null;
     if (anchor) anchor.removeAttribute("href");
+
+    // Stub the Next.js router so router.push() / router.replace() are no-ops
+    const router = window.__NEXT_ROUTER_INSTANCE__ || window.next?.router || null;
+    const origPush    = router?.push?.bind(router);
+    const origReplace = router?.replace?.bind(router);
+    const noop = () => Promise.resolve(false);
+    if (router) { router.push = noop; router.replace = noop; }
+
     galleryTrigger.click();
-    await new Promise(r => setTimeout(r, 200));
-    if (anchor && savedHref) anchor.setAttribute("href", savedHref);
+    await new Promise(r => setTimeout(r, 300));
+
+    // Restore router and href
+    if (router && origPush)    router.push    = origPush;
+    if (router && origReplace) router.replace = origReplace;
+    if (anchor && savedHref)   anchor.setAttribute("href", savedHref);
+
     await new Promise(r => setTimeout(r, 800));
   }
 
