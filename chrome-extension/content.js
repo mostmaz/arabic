@@ -94,16 +94,16 @@ async function extractListing() {
     images.push(normalized);
   }
 
-  // Strategy 1: search raw __NEXT_DATA__ text for os-cdn image URLs
+  // Strategy 1: search raw __NEXT_DATA__ for opensooq-images.os-cdn.com/previews/ URLs
   try {
     const nextData = document.getElementById("__NEXT_DATA__");
     if (nextData) {
       const raw = nextData.textContent;
-      // Match all os-cdn image URLs in the raw JSON text
-      const re = /https:\\?\/\\?\/[^"\\]*os-cdn\.com\\?\/[^"\\]+\.(?:jpg|jpeg|png|webp)/g;
+      // Match full image URLs including compound extensions like .jpg.webp
+      // Handles both escaped (\\/) and unescaped (/) slashes in JSON
+      const re = /https:\\?\/\\?\/opensooq-images\.os-cdn\.com\\?\/previews\\?\/[^"\\]+/g;
       let m;
       while ((m = re.exec(raw)) !== null) {
-        // Unescape JSON-escaped slashes
         addImg(m[0].replace(/\\\//g, "/"));
       }
     }
