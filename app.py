@@ -235,6 +235,19 @@ def api_clear_phones():
     return jsonify({"status": "ok", "count": len(all_items)})
 
 
+@app.route("/api/listings/clear-all", methods=["POST"])
+def api_clear_all():
+    """Delete all scraped listings, images, and reset state."""
+    import shutil
+    LISTINGS_FILE.write_text("[]", encoding="utf-8")
+    if STATE_FILE.exists():
+        STATE_FILE.write_text("{}", encoding="utf-8")
+    if IMAGES_DIR.exists():
+        shutil.rmtree(IMAGES_DIR)
+    IMAGES_DIR.mkdir()
+    return jsonify({"status": "ok"})
+
+
 # ── Login ────────────────────────────────────────────────────────────────────
 
 @app.route("/api/login", methods=["POST"])
