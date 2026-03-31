@@ -28,27 +28,30 @@ async function revealPhone() {
   const existing = getTelNumber();
   if (existing) return existing;
 
-  const allClickable = document.querySelectorAll("a, button, [role='button'], [onclick]");
+  // Find the phone button — most specific first, never click <a> tags (they navigate)
   let btn = null;
 
-  for (const el of allClickable) {
-    const cls = (el.className || "").toLowerCase();
-    const text = (el.innerText || el.textContent || "").trim();
-    const href = (el.getAttribute("href") || "").toLowerCase();
-    const dataType = (el.getAttribute("data-type") || "").toLowerCase();
-    const dataAction = (el.getAttribute("data-action") || "").toLowerCase();
+  // 1. OpenSooq uses id="primary" on the phone button
+  const primaryBtn = document.querySelector("button#primary");
+  if (primaryBtn) {
+    const t = (primaryBtn.innerText || primaryBtn.textContent || "").replace(/\s/g, "");
+    if (/\d{5,}/.test(t) || /07\d/.test(t)) btn = primaryBtn;
+  }
 
-    // Exact OpenSooq phone button class
-    if (el.className.includes("button_button__FPuHG") && el.className.includes("bg-primary")) {
-      btn = el; break;
+  // 2. button with known class + bg-primary (phone button only, not chat)
+  if (!btn) {
+    const candidate = document.querySelector("button.bg-primary, button[class*='bg-primary']");
+    if (candidate) {
+      const t = (candidate.innerText || candidate.textContent || "").replace(/\s/g, "");
+      if (/\d{5,}/.test(t) || /07\d/.test(t)) btn = candidate;
     }
-    if (cls.includes("phone") || cls.includes("call") || cls.includes("contact") ||
-        cls.includes("showphone") || dataType.includes("phone") ||
-        dataAction.includes("phone") || href.includes("phone")) {
-      btn = el; break;
-    }
-    if (/07\d[\dX]{4,}/.test(text) || /\+964/.test(text)) {
-      btn = el; break;
+  }
+
+  // 3. Any BUTTON (not <a>) whose text contains a masked phone number
+  if (!btn) {
+    for (const el of document.querySelectorAll("button")) {
+      const t = (el.innerText || el.textContent || "").replace(/\s/g, "");
+      if (/07[\dX]{8,}/.test(t)) { btn = el; break; }
     }
   }
 
