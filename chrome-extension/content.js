@@ -80,37 +80,35 @@ async function extractListing() {
   function addImg(src) {
     if (!src || typeof src !== "string") return;
     if (src.includes(".mp4") || src.includes("avatar") || src.includes("placeholder")) return;
-    const hashMatch = src.match(/previews\/[^/]+\/(.+)/);
-    const hash = hashMatch ? hashMatch[1] : src;
+    // Normalize to 2000x0 resolution
+    const normalized = src.replace(/\/\d+x\d+\//, "/2000x0/");
+    const hashMatch = normalized.match(/\/previews\/[^/]+\/(.+)/);
+    const hash = hashMatch ? hashMatch[1] : normalized;
     if (seenHash.has(hash)) return;
     seenHash.add(hash);
-    // Always use highest resolution
-    images.push(src.replace(/\/\d+x\d+\//, "/2000x0/"));
+    images.push(normalized);
   }
 
-  // Strategy 1: __NEXT_DATA__ JSON embedded by Next.js — contains ALL images
+  // Strategy 1: search raw __NEXT_DATA__ text for os-cdn image URLs
   try {
     const nextData = document.getElementById("__NEXT_DATA__");
     if (nextData) {
-      const json = JSON.parse(nextData.textContent);
-      const jsonStr = JSON.stringify(json);
-      // Extract all os-cdn.com image URLs from the JSON
-      const matches = jsonStr.match(/https:[^"]*os-cdn\.com[^"]*\.(?:jpg|jpeg|png|webp)[^"]*/g) || [];
-      matches.forEach(u => addImg(u.replace(/\\u002F/g, "/").replace(/\\/g, "")));
+      const raw = nextData.textContent;
+      // Match all os-cdn image URLs in the raw JSON text
+      const re = /https:\\?\/\\?\/[^"\\]*os-cdn\.com\\?\/[^"\\]+\.(?:jpg|jpeg|png|webp)/g;
+      let m;
+      while ((m = re.exec(raw)) !== null) {
+        // Unescape JSON-escaped slashes
+        addImg(m[0].replace(/\\\//g, "/"));
+      }
     }
   } catch (_) {}
 
   // Strategy 2: thumbnail strip (0x240 → upscale to 2000x0)
   if (images.length === 0) {
-    const gallerySection =
-      document.getElementById("listingViewGalleryModalDesktop") ||
-      document.getElementById("listingViewGallery") ||
-      document.querySelector("[id*='Gallery']");
-    if (gallerySection) {
-      gallerySection.querySelectorAll("img[src*='os-cdn.com'][src*='0x240']").forEach(img => {
-        addImg(img.src.replace("/0x240/", "/2000x0/"));
-      });
-    }
+    document.querySelectorAll("img[src*='os-cdn.com'][src*='0x240']").forEach(img => {
+      addImg(img.src.replace("/0x240/", "/2000x0/"));
+    });
   }
 
   // Strategy 3: srcset images
@@ -121,6 +119,8 @@ async function extractListing() {
       if (best) addImg(best.split(" ")[0].trim());
     });
   }
+
+  console.log("[OpenSooq Scraper] images found:", images.length, images);
 
   // ── Price ─────────────────────────────────────────────────────────────────────
   let price = "";
