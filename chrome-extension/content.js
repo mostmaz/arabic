@@ -180,7 +180,7 @@ async function extractListing() {
 
     for (let i = 0; i < maxClicks; i++) {
       nextBtn.click();
-      await new Promise(r => setTimeout(r, 700)); // wait for lazy image to render
+      await new Promise(r => setTimeout(r, 3000)); // wait for lazy image to render
       const before = images.length;
       collectCurrentSlideImage();
       if (images.length === before) {
