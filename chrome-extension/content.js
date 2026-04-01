@@ -184,7 +184,6 @@ async function extractListing() {
   // Extra collect in case last slide was slow
   await new Promise(r => setTimeout(r, 1000));
   collectCurrentSlideImage();
-  }
 
   // Close gallery
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }));
