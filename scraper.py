@@ -673,50 +673,100 @@ async def download_listing_images(
 
 async def extract_images_from_page(page: Page) -> list[str]:
     """
-    Extract listing gallery images by:
-    1. Recursively walking __NEXT_DATA__ JSON (catches server-rendered image URLs)
-    2. Scanning img[src] / img[data-src] in the DOM
+    Open the listing gallery, navigate through every slide, and collect
+    only the currently visible (largest on-screen) CDN preview image per slide.
 
-    Filters strictly to opensooq-images.os-cdn.com/previews/ URLs and
-    normalises every URL to 2000x0 (full resolution).
+    Playwright fires trusted clicks so the gallery opens reliably.
+    Collecting only the largest visible image per slide avoids picking up
+    similar-listing thumbnails from elsewhere on the page.
     """
-    return await page.evaluate("""() => {
-        const seen = new Set();
-        const imgs = [];
+    images: list[str] = []
+    seen: set[str] = set()
 
-        function addImg(src) {
-            if (!src || typeof src !== 'string') return;
-            if (!src.includes('opensooq-images.os-cdn.com/previews/')) return;
-            if (src.includes('avatar') || src.includes('placeholder') || src.includes('.mp4')) return;
-            const norm = src.replace(/\\/previews\\/[^\\/]+\\//, '/previews/2000x0/');
-            const m    = norm.match(/\\/previews\\/[^\\/]+\\/(.+)/);
-            const hash = (m ? m[1] : norm).replace(/\\.jpg(\\.webp)$/, '$1');
-            if (seen.has(hash)) return;
-            seen.add(hash);
-            imgs.push(norm);
-        }
+    def add_img(src: str) -> None:
+        if not src or "opensooq-images.os-cdn.com/previews/" not in src:
+            return
+        if any(x in src for x in ("avatar", "placeholder", ".mp4")):
+            return
+        normalized = re.sub(r"/previews/[^/]+/", "/previews/2000x0/", src)
+        m = re.search(r"/previews/[^/]+/(.+)", normalized)
+        h = re.sub(r"\.jpg(\.webp)$", r"\1", m.group(1) if m else normalized)
+        if h in seen:
+            return
+        seen.add(h)
+        images.append(normalized)
 
-        // Walk every string value in __NEXT_DATA__
-        try {
-            const nd = document.getElementById('__NEXT_DATA__');
-            if (nd) {
-                const walk = v => {
-                    if (typeof v === 'string') addImg(v);
-                    else if (Array.isArray(v)) v.forEach(walk);
-                    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
-                };
-                walk(JSON.parse(nd.textContent));
-            }
-        } catch(_) {}
+    # Collect the largest CDN preview image currently visible in the viewport
+    async def collect_current() -> None:
+        src = await page.evaluate("""() => {
+            let best = null, bestArea = 0;
+            document.querySelectorAll('img[src*="os-cdn.com/previews/"]').forEach(img => {
+                if (!img.src || img.src.includes('avatar') || img.src.includes('placeholder')) return;
+                const r = img.getBoundingClientRect();
+                if (r.width > 100 && r.height > 100 &&
+                    r.right > 0 && r.left < window.innerWidth &&
+                    r.bottom > 0 && r.top  < window.innerHeight) {
+                    const area = r.width * r.height;
+                    if (area > bestArea) { bestArea = area; best = img.src; }
+                }
+            });
+            return best;
+        }""")
+        if src:
+            add_img(src)
 
-        // Also scan DOM (covers anything loaded after page init)
-        document.querySelectorAll('img[src*="os-cdn.com/previews/"]')
-            .forEach(i => addImg(i.src));
-        document.querySelectorAll('img[data-src*="os-cdn.com/previews/"]')
-            .forEach(i => addImg(i.getAttribute('data-src')));
+    # Get total slide count from "N / M" counter
+    async def get_total() -> int:
+        els = await page.query_selector_all("span, div, p, strong")
+        for el in els:
+            try:
+                txt = (await el.text_content() or "").strip()
+                m = re.fullmatch(r"(\d+)\s*/\s*(\d+)", txt)
+                if m:
+                    t = int(m.group(2))
+                    if 2 <= t <= 50:
+                        return t
+            except Exception:
+                pass
+        return 0
 
-        return imgs;
-    }""") or []
+    # Open the gallery — Playwright page.click() fires trusted events
+    try:
+        trigger = page.locator(
+            "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
+        ).first
+        if await trigger.count() > 0:
+            await trigger.click()
+            await asyncio.sleep(1.5)
+    except Exception:
+        pass
+
+    await collect_current()
+
+    total = await get_total()
+    max_advances = (total - 1) if total > 1 else 30
+    no_new = 0
+
+    for _ in range(max_advances):
+        await page.keyboard.press("ArrowRight")
+        await asyncio.sleep(2.5)          # wait for lazy image to load
+        before = len(images)
+        await collect_current()
+        if len(images) == before:
+            no_new += 1
+            if no_new >= 3 and total == 0:
+                break
+        else:
+            no_new = 0
+
+    await asyncio.sleep(1.0)
+    await collect_current()               # catch last slide
+
+    # Close gallery
+    await page.keyboard.press("Escape")
+    await asyncio.sleep(0.5)
+
+    return images
 
 
 # ---------------------------------------------------------------------------
