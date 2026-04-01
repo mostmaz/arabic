@@ -123,35 +123,25 @@ async function extractListing() {
     await new Promise(r => setTimeout(r, 800));
   }
 
-  // Locate the gallery modal that just opened — scope all collection to it so we
-  // never pick up similar-listing thumbnails from the rest of the page
-  function findGalleryModal() {
-    const sels = [
-      "#listingViewGalleryModalDesktop", "#listingViewGalleryModal",
-      "[class*='GalleryModal']",  "[class*='gallery-modal']",
-      "[class*='ImageModal']",    "[class*='image-modal']",
-      "[class*='PhotoViewer']",   "[class*='photo-viewer']",
-      "[class*='LightBox']",      "[class*='lightbox']",
-    ];
-    for (const s of sels) {
-      const el = document.querySelector(s);
-      if (el && el.getBoundingClientRect().height > 0) return el;
-    }
-    return null;
+  // After gallery opens, collect only the currently displayed (largest visible) image.
+  // This avoids picking up similar-listing thumbnails from the rest of the page,
+  // since the gallery image is always the biggest preview on screen.
+  function collectCurrentSlideImage() {
+    let best = null, bestArea = 0;
+    document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => {
+      if (!img.src || img.src.includes("avatar") || img.src.includes("placeholder")) return;
+      const rect = img.getBoundingClientRect();
+      if (rect.width > 100 && rect.height > 100) {
+        const area = rect.width * rect.height;
+        if (area > bestArea) { bestArea = area; best = img; }
+      }
+    });
+    if (best) addImg(best.src);
   }
 
-  const galleryModal = findGalleryModal();
-
-  // Collect only from gallery modal; fall back to full document if modal not found
-  function collectSlideImages() {
-    (galleryModal || document).querySelectorAll("img[src*='os-cdn.com/previews/']")
-      .forEach(img => addImg(img.src));
-  }
-
-  // Read "N / M" slide counter scoped to the gallery
+  // Read "N / M" counter anywhere in the page to get total slide count
   function getSlideTotal() {
-    const root = galleryModal || document;
-    for (const el of root.querySelectorAll("span, div, p, strong")) {
+    for (const el of document.querySelectorAll("span, div, p, strong")) {
       if (el.children.length > 0) continue;
       const m = (el.textContent || "").trim().match(/^(\d+)\s*\/\s*(\d+)$/);
       if (m) {
@@ -162,26 +152,25 @@ async function extractListing() {
     return 0;
   }
 
-  // Find next-slide button, preferring gallery scope
+  // Find the next-slide button (never an <a>)
   function findNextBtn() {
     const sels = [
       ".swiper-button-next", "[class*='swiper-button-next']",
       ".slick-next",         "[class*='slick-next']",
       "button[aria-label='Next']",        "button[aria-label='next']",
       "button[aria-label*='Next slide']", "button[aria-label*='next slide']",
-      "[class*='next-btn']:not(a)", "[class*='nextBtn']:not(a)",
-      "[class*='arrow-right']:not(a)",    "[class*='arrowRight']:not(a)",
+      "[class*='next-btn']:not(a)",  "[class*='nextBtn']:not(a)",
+      "[class*='arrow-right']:not(a)", "[class*='arrowRight']:not(a)",
     ];
-    for (const root of [galleryModal, document].filter(Boolean)) {
-      for (const s of sels) {
-        const el = root.querySelector(s);
-        if (el && el.tagName !== "A") return el;
-      }
+    for (const s of sels) {
+      const el = document.querySelector(s);
+      if (el && el.tagName !== "A") return el;
     }
     return null;
   }
 
-  collectSlideImages(); // collect first/current slide
+  // Collect slide 1, then advance through all remaining slides
+  collectCurrentSlideImage();
 
   const nextBtn = findNextBtn();
   if (nextBtn) {
@@ -191,17 +180,18 @@ async function extractListing() {
 
     for (let i = 0; i < maxClicks; i++) {
       nextBtn.click();
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 700)); // wait for lazy image to render
       const before = images.length;
-      collectSlideImages();
+      collectCurrentSlideImage();
       if (images.length === before) {
         if (++noNewStreak >= 3 && total === 0) break;
       } else {
         noNewStreak = 0;
       }
     }
+    // Extra wait + collect in case the last slide was slow
     await new Promise(r => setTimeout(r, 500));
-    collectSlideImages();
+    collectCurrentSlideImage();
   }
 
   // Close gallery
