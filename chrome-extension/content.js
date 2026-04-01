@@ -93,9 +93,30 @@ async function extractListing() {
     images.push(normalized);
   }
 
+  // ── Fallback image sources (work even if gallery never opens) ────────────────
+
+  // 1. Parse __NEXT_DATA__ as JSON and recursively collect all CDN preview URLs
+  try {
+    const nd = document.getElementById("__NEXT_DATA__");
+    if (nd) {
+      const walk = v => {
+        if (typeof v === "string") addImg(v);
+        else if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === "object") Object.values(v).forEach(walk);
+      };
+      walk(JSON.parse(nd.textContent));
+    }
+  } catch (_) {}
+
+  // 2. Any img already loaded in DOM + lazy-load data-src attributes
+  document.querySelectorAll("img[src*='os-cdn.com/previews/']")
+    .forEach(img => addImg(img.src));
+  document.querySelectorAll("img[data-src*='os-cdn.com/previews/']")
+    .forEach(img => addImg(img.getAttribute("data-src")));
+
+  // ── Gallery navigation (bonus: loads remaining lazy images) ──────────────────
+
   // Open gallery: simulate a real click with full pointer-event sequence.
-  // element.click() sets isTrusted=false; a full MouseEvent sequence is closer
-  // to what the browser fires for a genuine user click and works with React.
   const galleryTrigger = document.querySelector(
     "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
   );
@@ -118,7 +139,6 @@ async function extractListing() {
       router.replace = guard;
     }
 
-    // Dispatch the full event sequence a real pointer/mouse interaction fires
     const rect = galleryTrigger.getBoundingClientRect();
     const ex = rect.left + rect.width  / 2;
     const ey = rect.top  + rect.height / 2;
@@ -130,24 +150,18 @@ async function extractListing() {
     galleryTrigger.dispatchEvent(new MouseEvent ("click",       eOpts));
 
     await new Promise(r => setTimeout(r, 300));
-
     if (router && origPush)    router.push    = origPush;
     if (router && origReplace) router.replace = origReplace;
     if (anchor && savedHref)   anchor.setAttribute("href", savedHref);
-
-    await new Promise(r => setTimeout(r, 1500)); // wait for gallery animation
+    await new Promise(r => setTimeout(r, 1500));
   }
 
-  // After gallery opens, collect only the currently displayed (largest visible) image.
-  // This avoids picking up similar-listing thumbnails from the rest of the page,
-  // since the gallery image is always the biggest preview on screen.
+  // Collect largest visible image per slide as gallery advances
   function collectCurrentSlideImage() {
     let best = null, bestArea = 0;
     document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => {
       if (!img.src || img.src.includes("avatar") || img.src.includes("placeholder")) return;
       const rect = img.getBoundingClientRect();
-      // Must be large AND actually inside the viewport — off-screen slides have
-      // the same dimensions but are translated outside the visible area
       const inViewport = rect.width > 100 && rect.height > 100 &&
                          rect.right > 0 && rect.left < window.innerWidth &&
                          rect.bottom > 0 && rect.top < window.innerHeight;
@@ -159,26 +173,15 @@ async function extractListing() {
     if (best) addImg(best.src);
   }
 
-  // Read "N / M" counter anywhere in the page to get total slide count
   function getSlideTotal() {
     for (const el of document.querySelectorAll("span, div, p, strong")) {
       if (el.children.length > 0) continue;
       const m = (el.textContent || "").trim().match(/^(\d+)\s*\/\s*(\d+)$/);
-      if (m) {
-        const total = parseInt(m[2]);
-        if (total >= 2 && total <= 50) return total;
-      }
+      if (m) { const t = parseInt(m[2]); if (t >= 2 && t <= 50) return t; }
     }
     return 0;
   }
 
-  // Advance to next slide using ArrowRight — works with all gallery/slider libraries
-  // without needing to know any button class names
-  function nextSlide() {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", keyCode: 39, bubbles: true }));
-  }
-
-  // Collect slide 1, then advance through all remaining slides
   collectCurrentSlideImage();
 
   const total = getSlideTotal();
@@ -186,8 +189,8 @@ async function extractListing() {
   let noNewStreak = 0;
 
   for (let i = 0; i < maxAdvances; i++) {
-    nextSlide();
-    await new Promise(r => setTimeout(r, 3000)); // wait for lazy image to load
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", keyCode: 39, bubbles: true }));
+    await new Promise(r => setTimeout(r, 3000));
     const before = images.length;
     collectCurrentSlideImage();
     if (images.length === before) {
@@ -196,6 +199,8 @@ async function extractListing() {
       noNewStreak = 0;
     }
   }
+  await new Promise(r => setTimeout(r, 1000));
+  collectCurrentSlideImage();
   // Extra collect in case last slide was slow
   await new Promise(r => setTimeout(r, 1000));
   collectCurrentSlideImage();
