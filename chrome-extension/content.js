@@ -131,7 +131,12 @@ async function extractListing() {
     document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => {
       if (!img.src || img.src.includes("avatar") || img.src.includes("placeholder")) return;
       const rect = img.getBoundingClientRect();
-      if (rect.width > 100 && rect.height > 100) {
+      // Must be large AND actually inside the viewport — off-screen slides have
+      // the same dimensions but are translated outside the visible area
+      const inViewport = rect.width > 100 && rect.height > 100 &&
+                         rect.right > 0 && rect.left < window.innerWidth &&
+                         rect.bottom > 0 && rect.top < window.innerHeight;
+      if (inViewport) {
         const area = rect.width * rect.height;
         if (area > bestArea) { bestArea = area; best = img; }
       }
