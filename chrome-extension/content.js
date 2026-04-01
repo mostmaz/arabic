@@ -93,9 +93,9 @@ async function extractListing() {
     images.push(normalized);
   }
 
-  // Open gallery: click first listing image.
-  // Block navigation to OTHER pages (user profile etc.) but allow same-listing
-  // URL changes so the gallery can open via router.push('?gallery=1').
+  // Open gallery: simulate a real click with full pointer-event sequence.
+  // element.click() sets isTrusted=false; a full MouseEvent sequence is closer
+  // to what the browser fires for a genuine user click and works with React.
   const galleryTrigger = document.querySelector(
     "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
   );
@@ -108,7 +108,6 @@ async function extractListing() {
     const origPush    = router?.push?.bind(router);
     const origReplace = router?.replace?.bind(router);
     if (router && origPush) {
-      // Allow same-listing navigation (gallery query params), block different-page navigation
       const guard = (url, ...args) => {
         const target = typeof url === "string" ? url : (url?.pathname ?? "");
         const samePage = target.startsWith("?") || target.startsWith("#") ||
@@ -119,14 +118,24 @@ async function extractListing() {
       router.replace = guard;
     }
 
-    galleryTrigger.click();
+    // Dispatch the full event sequence a real pointer/mouse interaction fires
+    const rect = galleryTrigger.getBoundingClientRect();
+    const ex = rect.left + rect.width  / 2;
+    const ey = rect.top  + rect.height / 2;
+    const eOpts = { bubbles: true, cancelable: true, view: window, clientX: ex, clientY: ey };
+    galleryTrigger.dispatchEvent(new PointerEvent("pointerdown", eOpts));
+    galleryTrigger.dispatchEvent(new MouseEvent ("mousedown",   eOpts));
+    galleryTrigger.dispatchEvent(new PointerEvent("pointerup",  eOpts));
+    galleryTrigger.dispatchEvent(new MouseEvent ("mouseup",     eOpts));
+    galleryTrigger.dispatchEvent(new MouseEvent ("click",       eOpts));
+
     await new Promise(r => setTimeout(r, 300));
 
     if (router && origPush)    router.push    = origPush;
     if (router && origReplace) router.replace = origReplace;
     if (anchor && savedHref)   anchor.setAttribute("href", savedHref);
 
-    await new Promise(r => setTimeout(r, 1000)); // wait for gallery to open
+    await new Promise(r => setTimeout(r, 1500)); // wait for gallery animation
   }
 
   // After gallery opens, collect only the currently displayed (largest visible) image.
