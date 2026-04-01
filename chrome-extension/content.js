@@ -152,46 +152,33 @@ async function extractListing() {
     return 0;
   }
 
-  // Find the next-slide button (never an <a>)
-  function findNextBtn() {
-    const sels = [
-      ".swiper-button-next", "[class*='swiper-button-next']",
-      ".slick-next",         "[class*='slick-next']",
-      "button[aria-label='Next']",        "button[aria-label='next']",
-      "button[aria-label*='Next slide']", "button[aria-label*='next slide']",
-      "[class*='next-btn']:not(a)",  "[class*='nextBtn']:not(a)",
-      "[class*='arrow-right']:not(a)", "[class*='arrowRight']:not(a)",
-    ];
-    for (const s of sels) {
-      const el = document.querySelector(s);
-      if (el && el.tagName !== "A") return el;
-    }
-    return null;
+  // Advance to next slide using ArrowRight — works with all gallery/slider libraries
+  // without needing to know any button class names
+  function nextSlide() {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", keyCode: 39, bubbles: true }));
   }
 
   // Collect slide 1, then advance through all remaining slides
   collectCurrentSlideImage();
 
-  const nextBtn = findNextBtn();
-  if (nextBtn) {
-    const total = getSlideTotal();
-    const maxClicks = total > 1 ? total - 1 : 30;
-    let noNewStreak = 0;
+  const total = getSlideTotal();
+  const maxAdvances = total > 1 ? total - 1 : 30;
+  let noNewStreak = 0;
 
-    for (let i = 0; i < maxClicks; i++) {
-      nextBtn.click();
-      await new Promise(r => setTimeout(r, 3000)); // wait for lazy image to render
-      const before = images.length;
-      collectCurrentSlideImage();
-      if (images.length === before) {
-        if (++noNewStreak >= 3 && total === 0) break;
-      } else {
-        noNewStreak = 0;
-      }
-    }
-    // Extra wait + collect in case the last slide was slow
-    await new Promise(r => setTimeout(r, 500));
+  for (let i = 0; i < maxAdvances; i++) {
+    nextSlide();
+    await new Promise(r => setTimeout(r, 3000)); // wait for lazy image to load
+    const before = images.length;
     collectCurrentSlideImage();
+    if (images.length === before) {
+      if (++noNewStreak >= 3 && total === 0) break;
+    } else {
+      noNewStreak = 0;
+    }
+  }
+  // Extra collect in case last slide was slow
+  await new Promise(r => setTimeout(r, 1000));
+  collectCurrentSlideImage();
   }
 
   // Close gallery
