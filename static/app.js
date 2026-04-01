@@ -354,10 +354,10 @@ async function clearPhones() {
 }
 
 async function clearAll() {
-  if (!confirm("This will permanently delete ALL scraped listings and downloaded images. Are you sure?")) return;
-  if (!confirm("Second confirmation: this cannot be undone. Delete everything?")) return;
+  if (!confirm("Delete ALL scraped listings and downloaded images? This cannot be undone.")) return;
   await apiFetch("/api/listings/clear-all", "POST");
-  loadListings();
+  listingsMap = {};
+  loadListings(1);
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
