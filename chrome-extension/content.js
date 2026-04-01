@@ -94,9 +94,8 @@ async function extractListing() {
   }
 
   // Open gallery: click first listing image.
-  // Two navigation-prevention layers are needed for Next.js <Link> components:
-  //   1. Remove the <a> href (blocks browser default navigation)
-  //   2. Stub router.push/replace (blocks Next.js client-side routing via onClick)
+  // Block navigation to OTHER pages (user profile etc.) but allow same-listing
+  // URL changes so the gallery can open via router.push('?gallery=1').
   const galleryTrigger = document.querySelector(
     "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
   );
@@ -105,22 +104,29 @@ async function extractListing() {
     const savedHref = anchor?.getAttribute("href") ?? null;
     if (anchor) anchor.removeAttribute("href");
 
-    // Stub the Next.js router so router.push() / router.replace() are no-ops
     const router = window.__NEXT_ROUTER_INSTANCE__ || window.next?.router || null;
     const origPush    = router?.push?.bind(router);
     const origReplace = router?.replace?.bind(router);
-    const noop = () => Promise.resolve(false);
-    if (router) { router.push = noop; router.replace = noop; }
+    if (router && origPush) {
+      // Allow same-listing navigation (gallery query params), block different-page navigation
+      const guard = (url, ...args) => {
+        const target = typeof url === "string" ? url : (url?.pathname ?? "");
+        const samePage = target.startsWith("?") || target.startsWith("#") ||
+                         target.includes(listing_id) || target === location.pathname;
+        return samePage ? origPush.call(router, url, ...args) : Promise.resolve(false);
+      };
+      router.push    = guard;
+      router.replace = guard;
+    }
 
     galleryTrigger.click();
     await new Promise(r => setTimeout(r, 300));
 
-    // Restore router and href
     if (router && origPush)    router.push    = origPush;
     if (router && origReplace) router.replace = origReplace;
     if (anchor && savedHref)   anchor.setAttribute("href", savedHref);
 
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 1000)); // wait for gallery to open
   }
 
   // After gallery opens, collect only the currently displayed (largest visible) image.
