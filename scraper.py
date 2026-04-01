@@ -673,12 +673,8 @@ async def download_listing_images(
 
 async def extract_images_from_page(page: Page) -> list[str]:
     """
-    Open the listing gallery, navigate through every slide, and collect
-    only the currently visible (largest on-screen) CDN preview image per slide.
-
-    Playwright fires trusted clicks so the gallery opens reliably.
-    Collecting only the largest visible image per slide avoids picking up
-    similar-listing thumbnails from elsewhere on the page.
+    Open the listing gallery, navigate every slide, collect the largest
+    visible CDN preview image per slide.
     """
     images: list[str] = []
     seen: set[str] = set()
@@ -695,8 +691,8 @@ async def extract_images_from_page(page: Page) -> list[str]:
             return
         seen.add(h)
         images.append(normalized)
+        print(f"  [img] {normalized}", flush=True)
 
-    # Collect the largest CDN preview image currently visible in the viewport
     async def collect_current() -> None:
         src = await page.evaluate("""() => {
             let best = null, bestArea = 0;
@@ -715,7 +711,20 @@ async def extract_images_from_page(page: Page) -> list[str]:
         if src:
             add_img(src)
 
-    # Get total slide count from "N / M" counter
+    async def next_slide() -> None:
+        # Try Swiper API first (bypasses focus issues), fall back to ArrowRight
+        used_swiper = await page.evaluate("""() => {
+            for (const el of document.querySelectorAll('[class*="swiper"]')) {
+                if (el.swiper && el.swiper.slides && el.swiper.slides.length > 1) {
+                    el.swiper.slideNext();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if not used_swiper:
+            await page.keyboard.press("ArrowRight")
+
     async def get_total() -> int:
         els = await page.query_selector_all("span, div, p, strong")
         for el in els:
@@ -730,7 +739,7 @@ async def extract_images_from_page(page: Page) -> list[str]:
                 pass
         return 0
 
-    # Open the gallery — Playwright page.click() fires trusted events
+    # Open gallery with a trusted Playwright click
     try:
         trigger = page.locator(
             "img[src*='os-cdn.com/previews/']:not([src*='avatar']):not([src*='placeholder'])"
@@ -738,18 +747,20 @@ async def extract_images_from_page(page: Page) -> list[str]:
         if await trigger.count() > 0:
             await trigger.click()
             await asyncio.sleep(1.5)
-    except Exception:
-        pass
+            print("  [gallery] opened", flush=True)
+    except Exception as e:
+        print(f"  [gallery] open failed: {e}", flush=True)
 
     await collect_current()
 
     total = await get_total()
+    print(f"  [gallery] total slides: {total}", flush=True)
     max_advances = (total - 1) if total > 1 else 30
     no_new = 0
 
-    for _ in range(max_advances):
-        await page.keyboard.press("ArrowRight")
-        await asyncio.sleep(2.5)          # wait for lazy image to load
+    for i in range(max_advances):
+        await next_slide()
+        await asyncio.sleep(2.5)
         before = len(images)
         await collect_current()
         if len(images) == before:
@@ -760,12 +771,12 @@ async def extract_images_from_page(page: Page) -> list[str]:
             no_new = 0
 
     await asyncio.sleep(1.0)
-    await collect_current()               # catch last slide
+    await collect_current()
 
-    # Close gallery
     await page.keyboard.press("Escape")
     await asyncio.sleep(0.5)
 
+    print(f"  [gallery] done — {len(images)} images", flush=True)
     return images
 
 
