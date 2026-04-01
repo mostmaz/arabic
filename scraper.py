@@ -591,16 +591,22 @@ def parse_detail(html: str, url: str) -> Listing:
     date_el = soup.select_one("time,[class*='date'],[datetime]")
     date_posted = (date_el.get("datetime") or date_el.get_text(strip=True)) if date_el else ""
 
-    # Images
+    # Images — only listing CDN preview URLs, normalized to full resolution
     images: list[str] = []
-    for img in soup.select(
-        ".slick-slide img,.gallery img,[class*='gallery'] img,"
-        "[class*='slider'] img,.postImages img,img[data-src],img[src]"
-    ):
+    seen: set[str] = set()
+    for img in soup.select("img"):
         src = img.get("data-src") or img.get("data-original") or img.get("src") or ""
-        if src and src.startswith("http") and src not in images:
-            if not any(x in src for x in ["placeholder","avatar","icon","logo","1x1","000.svg"]):
-                images.append(src)
+        if "opensooq-images.os-cdn.com/previews/" not in src:
+            continue
+        if any(x in src for x in ["avatar", "placeholder", ".mp4"]):
+            continue
+        normalized = re.sub(r"/previews/[^/]+/", "/previews/2000x0/", src)
+        m = re.search(r"/previews/[^/]+/(.+)", normalized)
+        h = re.sub(r"\.jpg(\.webp)$", r"\1", m.group(1) if m else normalized)
+        if h in seen:
+            continue
+        seen.add(h)
+        images.append(normalized)
 
     return Listing(
         listing_id=listing_id, title=title, price=price,
@@ -662,6 +668,58 @@ async def download_listing_images(
 
 
 # ---------------------------------------------------------------------------
+# Playwright image extractor (runs in page JS context)
+# ---------------------------------------------------------------------------
+
+async def extract_images_from_page(page: Page) -> list[str]:
+    """
+    Extract listing gallery images by:
+    1. Recursively walking __NEXT_DATA__ JSON (catches server-rendered image URLs)
+    2. Scanning img[src] / img[data-src] in the DOM
+
+    Filters strictly to opensooq-images.os-cdn.com/previews/ URLs and
+    normalises every URL to 2000x0 (full resolution).
+    """
+    return await page.evaluate("""() => {
+        const seen = new Set();
+        const imgs = [];
+
+        function addImg(src) {
+            if (!src || typeof src !== 'string') return;
+            if (!src.includes('opensooq-images.os-cdn.com/previews/')) return;
+            if (src.includes('avatar') || src.includes('placeholder') || src.includes('.mp4')) return;
+            const norm = src.replace(/\\/previews\\/[^\\/]+\\//, '/previews/2000x0/');
+            const m    = norm.match(/\\/previews\\/[^\\/]+\\/(.+)/);
+            const hash = (m ? m[1] : norm).replace(/\\.jpg(\\.webp)$/, '$1');
+            if (seen.has(hash)) return;
+            seen.add(hash);
+            imgs.push(norm);
+        }
+
+        // Walk every string value in __NEXT_DATA__
+        try {
+            const nd = document.getElementById('__NEXT_DATA__');
+            if (nd) {
+                const walk = v => {
+                    if (typeof v === 'string') addImg(v);
+                    else if (Array.isArray(v)) v.forEach(walk);
+                    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+                };
+                walk(JSON.parse(nd.textContent));
+            }
+        } catch(_) {}
+
+        // Also scan DOM (covers anything loaded after page init)
+        document.querySelectorAll('img[src*="os-cdn.com/previews/"]')
+            .forEach(i => addImg(i.src));
+        document.querySelectorAll('img[data-src*="os-cdn.com/previews/"]')
+            .forEach(i => addImg(i.getAttribute('data-src')));
+
+        return imgs;
+    }""") or []
+
+
+# ---------------------------------------------------------------------------
 # Core scrape function (called per user request)
 # ---------------------------------------------------------------------------
 
@@ -714,6 +772,7 @@ async def scrape_page(
                 html = await page.content()
                 listing = parse_detail(html, url)
                 listing.phone = phone
+                listing.images = await extract_images_from_page(page)
                 progress(current=1, message=f"Parsed: {listing.title or url}")
 
                 if images_dir:
@@ -786,6 +845,7 @@ async def scrape_page(
                             html = await page.content()
                             listing = parse_detail(html, lurl)
                             listing.phone = phone
+                            listing.images = await extract_images_from_page(page)
 
                             if images_dir:
                                 await download_listing_images(listing, Path(images_dir), http, img_sem)
