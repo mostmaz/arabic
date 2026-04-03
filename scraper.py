@@ -816,10 +816,15 @@ async def scrape_page(
         page = await context.new_page()
 
         try:
-            if is_listing_url(url):
+            # Navigate first so redirects (e.g. short URLs like opn.so/xxx) are followed,
+            # then decide based on the final URL whether it's a listing or category page.
+            progress(message="Fetching page...")
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            final_url = page.url   # URL after all redirects
+
+            if is_listing_url(final_url) or is_listing_url(url):
                 # ── Single listing ───────────────────────────────────────────
                 progress(message="Fetching listing...", total=1, current=0)
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await jitter_sleep(2.0, 0.5)
                 await human_mouse_wander(page)
                 await human_scroll(page)
@@ -831,10 +836,10 @@ async def scrape_page(
                     phone = await reveal_phone(page)
 
                 html = await page.content()
-                listing = parse_detail(html, url)
+                listing = parse_detail(html, final_url)
                 listing.phone = phone
                 listing.images = await extract_images_from_page(page)
-                progress(current=1, message=f"Parsed: {listing.title or url}")
+                progress(current=1, message=f"Parsed: {listing.title or final_url}")
 
                 if images_dir:
                     progress(message="Downloading images...")
@@ -848,7 +853,6 @@ async def scrape_page(
             else:
                 # ── Category / index page ────────────────────────────────────
                 progress(message="Fetching index page...")
-                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
                 # Wait for JS to inject listing cards; try known card selectors
                 for card_sel in (
                     "a[href*='/ar/']",
