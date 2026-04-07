@@ -119,24 +119,37 @@ async function extractListing() {
     return 0;
   }
 
-  // Find the ">" next-slide button that appears on the right side of the gallery
-  function findNextBtn() {
-    // Try known slider class names first
-    for (const s of [".swiper-button-next","[class*='swiper-button-next']",
-                     ".slick-next","[class*='slick-next']"]) {
+  // Advance to the next gallery slide using best available method
+  async function advanceSlide() {
+    // 1. Swiper JS API (most reliable — no click needed)
+    for (const s of [".swiper", ".swiper-container", "[class*='swiper']"]) {
       const el = document.querySelector(s);
-      if (el && el.tagName !== "A") return el;
+      if (el && el.swiper) { el.swiper.slideNext(); return; }
     }
-    // Position-based fallback: button on the right half of the screen,
-    // vertically centred — that's the gallery ">" arrow
-    for (const btn of document.querySelectorAll("button")) {
+
+    // 2. Known next-button class names
+    for (const s of [".swiper-button-next", "[class*='swiper-button-next']",
+                     ".slick-next", "[class*='slick-next']",
+                     "[aria-label*='next' i]", "[aria-label*='Next']"]) {
+      const el = document.querySelector(s);
+      if (el && el.tagName !== "A") { el.click(); return; }
+    }
+
+    // 3. Position-based: button on the right side, vertically centred
+    for (const btn of document.querySelectorAll("button, [role='button']")) {
       const r = btn.getBoundingClientRect();
       if (r.width < 10 || r.height < 10) continue;
       if (r.left > window.innerWidth * 0.6 &&
           r.top  > window.innerHeight * 0.2 &&
-          r.top  < window.innerHeight * 0.8) return btn;
+          r.top  < window.innerHeight * 0.8) { btn.click(); return; }
     }
-    return null;
+
+    // 4. ArrowRight keyboard event on focused gallery element
+    const overlay = document.querySelector(
+      "[class*='gallery'], [class*='modal'], [class*='lightbox'], [class*='overlay'], [role='dialog']"
+    );
+    const target = overlay || document.activeElement || document.body;
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", keyCode: 39, bubbles: true }));
   }
 
   // ── Step 1: open the gallery ────────────────────────────────────────────────
@@ -196,30 +209,27 @@ async function extractListing() {
   }
 
   // ── Step 2: collect slide 1, then advance through all slides ────────────────
+  await new Promise(r => setTimeout(r, 500));  // let first slide render
   collectCurrentSlideImage();
+  console.log("[OpenSooq Scraper] slide 1 collected, images so far:", images.length);
 
-  const total      = getSlideTotal();
-  const maxClicks  = total > 1 ? total - 1 : 30;
-  const nextBtn    = findNextBtn();
-  let noNewStreak  = 0;
+  const total     = getSlideTotal();
+  const maxSlides = total > 1 ? total : 30;
+  let noNewStreak = 0;
 
-  for (let i = 0; i < maxClicks; i++) {
-    if (nextBtn) {
-      nextBtn.click();
-    } else {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", keyCode: 39, bubbles: true }));
-    }
-    await new Promise(r => setTimeout(r, 3000));   // wait for lazy image
+  for (let i = 0; i < maxSlides - 1; i++) {
+    await advanceSlide();
+    await new Promise(r => setTimeout(r, 3000));   // wait for lazy image to load
     const before = images.length;
     collectCurrentSlideImage();
+    console.log(`[OpenSooq Scraper] slide ${i + 2}: images now ${images.length}`);
     if (images.length === before) {
-      if (++noNewStreak >= 3 && total === 0) break;
+      noNewStreak++;
+      if (noNewStreak >= 3) break;  // stuck — stop regardless of total
     } else {
       noNewStreak = 0;
     }
   }
-  await new Promise(r => setTimeout(r, 1000));
-  collectCurrentSlideImage();  // catch final slide
 
   // Close gallery
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }));
