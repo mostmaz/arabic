@@ -124,7 +124,10 @@ async function extractListing() {
     // 1. Swiper JS API (most reliable — no click needed)
     for (const s of [".swiper", ".swiper-container", "[class*='swiper']"]) {
       const el = document.querySelector(s);
-      if (el && el.swiper) { el.swiper.slideNext(); return; }
+      if (el && el.swiper) {
+        console.log("[OpenSooq Scraper] advance: Swiper API on", el.className);
+        el.swiper.slideNext(); return;
+      }
     }
 
     // 2. Known next-button class names
@@ -132,24 +135,44 @@ async function extractListing() {
                      ".slick-next", "[class*='slick-next']",
                      "[aria-label*='next' i]", "[aria-label*='Next']"]) {
       const el = document.querySelector(s);
-      if (el && el.tagName !== "A") { el.click(); return; }
+      if (el && el.tagName !== "A") {
+        console.log("[OpenSooq Scraper] advance: selector", s);
+        el.click(); return;
+      }
     }
 
     // 3. Position-based: button on the right side, vertically centred
+    const rightBtns = [];
     for (const btn of document.querySelectorAll("button, [role='button']")) {
       const r = btn.getBoundingClientRect();
       if (r.width < 10 || r.height < 10) continue;
       if (r.left > window.innerWidth * 0.6 &&
           r.top  > window.innerHeight * 0.2 &&
-          r.top  < window.innerHeight * 0.8) { btn.click(); return; }
+          r.top  < window.innerHeight * 0.8) rightBtns.push(btn);
+    }
+    console.log("[OpenSooq Scraper] advance: right-side buttons found:", rightBtns.length,
+      rightBtns.map(b => b.outerHTML.slice(0, 80)));
+    if (rightBtns.length > 0) { rightBtns[0].click(); return; }
+
+    // 4. Click at right-centre of viewport (gallery clickable zone)
+    const cx = Math.round(window.innerWidth * 0.88);
+    const cy = Math.round(window.innerHeight * 0.5);
+    const pointEl = document.elementFromPoint(cx, cy);
+    if (pointEl) {
+      console.log("[OpenSooq Scraper] advance: elementFromPoint at right-centre:",
+        pointEl.tagName, pointEl.className?.slice(0, 60));
+      pointEl.click();
+      return;
     }
 
-    // 4. ArrowRight keyboard event on focused gallery element
+    // 5. ArrowRight on window + overlay
     const overlay = document.querySelector(
       "[class*='gallery'], [class*='modal'], [class*='lightbox'], [class*='overlay'], [role='dialog']"
     );
-    const target = overlay || document.activeElement || document.body;
-    target.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", keyCode: 39, bubbles: true }));
+    const ev = { key: "ArrowRight", keyCode: 39, bubbles: true, cancelable: true };
+    console.log("[OpenSooq Scraper] advance: ArrowRight on window + overlay", overlay?.className?.slice(0, 40));
+    window.dispatchEvent(new KeyboardEvent("keydown", ev));
+    if (overlay) overlay.dispatchEvent(new KeyboardEvent("keydown", ev));
   }
 
   // ── Step 1: open the gallery ────────────────────────────────────────────────
