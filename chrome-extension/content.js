@@ -96,17 +96,20 @@ async function extractListing() {
   // When the gallery is open this is always the active slide image.
   function collectCurrentSlideImage() {
     let best = null, bestArea = 0;
-    document.querySelectorAll("img[src*='os-cdn.com/previews/']").forEach(img => {
-      if (!img.src || img.src.includes("avatar") || img.src.includes("placeholder")) return;
+    document.querySelectorAll("img").forEach(img => {
+      // Check src, data-src, and data-lazy-src (lazy loading patterns)
+      const src = img.src || img.getAttribute("data-src") || img.getAttribute("data-lazy-src") || "";
+      if (!src.includes("os-cdn.com/previews/")) return;
+      if (src.includes("avatar") || src.includes("placeholder")) return;
       const r = img.getBoundingClientRect();
       if (r.width > 100 && r.height > 100 &&
           r.right > 0 && r.left < window.innerWidth &&
           r.bottom > 0 && r.top  < window.innerHeight) {
         const area = r.width * r.height;
-        if (area > bestArea) { bestArea = area; best = img; }
+        if (area > bestArea) { bestArea = area; best = src; }
       }
     });
-    if (best) addImg(best.src);
+    if (best) addImg(best);
   }
 
   // Read total from the "N / M" counter shown in the gallery overlay
@@ -240,6 +243,27 @@ async function extractListing() {
   // Close gallery
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true }));
   await new Promise(r => setTimeout(r, 300));
+
+  // Fallback: if gallery navigation collected < 2 images, try __NEXT_DATA__
+  // but only take images that appear near our listing_id in the JSON tree.
+  if (images.length < 2 && listing_id) {
+    try {
+      const nd = JSON.parse(document.getElementById("__NEXT_DATA__")?.textContent || "null");
+      if (nd) {
+        // Serialize the part of the JSON that contains our listing ID
+        const raw = JSON.stringify(nd);
+        // Find the listing's image block: search for listing_id, grab all os-cdn previews nearby
+        const idx = raw.indexOf(`"${listing_id}"`);
+        if (idx !== -1) {
+          const chunk = raw.slice(Math.max(0, idx - 100), idx + 20000);
+          const urls = [...chunk.matchAll(/https?:\/\/opensooq-images\.os-cdn\.com\/previews\/[^"\\]+/g)]
+            .map(m => m[0])
+            .filter(u => !u.includes("avatar") && !u.includes("placeholder"));
+          urls.forEach(u => addImg(u));
+        }
+      }
+    } catch (_) {}
+  }
 
   console.log("[OpenSooq Scraper] images found:", images.length, images);
 
