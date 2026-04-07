@@ -41,7 +41,7 @@ async function processNext() {
   broadcastStatus("opening", url);
 
   try {
-    const tab = await chrome.tabs.create({ url, active: false });
+    const tab = await chrome.tabs.create({ url, active: true });
     currentTabId = tab.id;
 
     // Wait for page to load then extract
